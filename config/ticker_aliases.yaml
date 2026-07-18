@@ -1,0 +1,112 @@
+# Canonical symbol -> aliases (case-insensitive match after normalize)
+# symbol uses market data form (yfinance where possible)
+
+BTC-USD:
+  name: Bitcoin
+  asset_class: crypto
+  aliases:
+    - BTC
+    - Bitcoin
+    - 比特币
+    - XBT
+    - $BTC
+    # 口语黑话由 LLM 学习写入 ticker_aliases.learned.yaml；库内预留常见称呼
+    - 大饼
+    - 币圈大饼
+
+ETH-USD:
+  name: Ethereum
+  asset_class: crypto
+  aliases:
+    - ETH
+    - Ethereum
+    - 以太坊
+    - $ETH
+
+SOL-USD:
+  name: Solana
+  asset_class: crypto
+  aliases:
+    - SOL
+    - Solana
+    - 索拉纳
+    - $SOL
+
+# SanDisk / 闪迪 — Chinese community often quotes ~1000+ prices (may be CN listing or scaled)
+# Keep canonical SNDK; live yfinance may differ — paper uses KOL stated entry first.
+SNDK:
+  name: SanDisk / 闪迪
+  asset_class: equity
+  aliases:
+    - SNDK
+    - SanDisk
+    - 闪迪
+    - 闪迪科技
+    - SANDISK
+  yfinance_symbol: SNDK
+
+NVDA:
+  name: NVIDIA
+  asset_class: equity
+  aliases:
+    - NVDA
+    - NVIDIA
+    - 英伟达
+    - 輝達
+    - $NVDA
+
+TSLA:
+  name: Tesla
+  asset_class: equity
+  aliases:
+    - TSLA
+    - Tesla
+    - 特斯拉
+    - $TSLA
+
+AAPL:
+  name: Apple
+  asset_class: equity
+  aliases:
+    - AAPL
+    - Apple
+    - 苹果
+    - $AAPL
+
+SPY:
+  name: S&P 500 ETF
+  asset_class: etf
+  aliases:
+    - SPY
+    - 标普
+    - 标普500
+    - S&P500
+    - SPX
+
+QQQ:
+  name: Nasdaq-100 ETF
+  asset_class: etf
+  aliases:
+    - QQQ
+    - 纳指
+    - 纳斯达克
+    - NDX
+
+# China A-share style examples (yfinance .SS/.SZ). Phase 1 demo may use mock prices if unavailable.
+600519.SS:
+  name: 贵州茅台
+  asset_class: equity
+  aliases:
+    - 茅台
+    - 贵州茅台
+    - 600519
+    - MT
+
+300750.SZ:
+  name: 宁德时代
+  asset_class: equity
+  aliases:
+    - 宁德时代
+    - 宁德
+    - 300750
+    - CATL

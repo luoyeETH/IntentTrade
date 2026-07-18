@@ -1,0 +1,53 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+credentials*.json
+secrets/
+
+# Local agent / IDE notes (not for public repo)
+Agents.md
+CLAUDE.md
+.claude/
+.agents/
+.codex/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Accidental local screenshots / dumps
+*.png
+!frontend/public/**/*.png
+!src/**/*.png
+
+# Runtime data
+*.log
+logs/
+data/db/*.db
+data/db/*.db-journal
+data/cache/
+!data/sample/**
+
+# Learned aliases may contain private slang experiments; keep local by default
+config/ticker_aliases.learned.yaml

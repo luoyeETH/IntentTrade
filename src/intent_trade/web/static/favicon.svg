@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="IntentTrade">
+  <!-- Minimal mark: dark plate + intent arrow + candle wick -->
+  <rect width="64" height="64" rx="14" fill="#0a0a0a"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="12.5" fill="none" stroke="#2a2a2a" stroke-width="1"/>
+  <!-- candle body -->
+  <rect x="28" y="22" width="8" height="22" rx="1.5" fill="#e8e8e8"/>
+  <!-- wick -->
+  <rect x="31" y="12" width="2" height="40" rx="1" fill="#9a9a9a"/>
+  <!-- intent arrow (long) -->
+  <path d="M14 42 L26 30" stroke="#3dd68c" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <path d="M20 30 H26 V36" stroke="#3dd68c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- signal dot -->
+  <circle cx="46" cy="20" r="3.5" fill="#3dd68c"/>
+</svg>

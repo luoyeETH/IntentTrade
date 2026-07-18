@@ -1,0 +1,101 @@
+# IntentTrade Phase 1 configuration
+
+app:
+  name: IntentTrade
+  timezone: Asia/Shanghai
+  data_dir: data
+  db_path: data/db/intent_trade.db
+
+# KOLs to monitor
+# - mock source uses sample posts (demo KOLs below)
+# - twitterapi_io / x_api use live handles (e.g. xtony1314)
+kols:
+  # Primary live target
+  - username: xtony1314
+    display_name: 逍遥XTony
+    weight: 1.0
+    enabled: true
+  # Demo KOLs (only useful with twitter.source=mock)
+  - username: crypto_alpha_king
+    display_name: CryptoAlphaKing
+    weight: 1.0
+    enabled: false
+  - username: wallstreet_echo
+    display_name: WallStreetEcho
+    weight: 0.9
+    enabled: false
+  - username: a_share_scout
+    display_name: A股侦察兵
+    weight: 0.8
+    enabled: false
+  - username: chip_watcher
+    display_name: ChipWatcher
+    weight: 1.0
+    enabled: false
+
+twitter:
+  # mock | rapidapi | twitterapi_io | x_api
+  # rapidapi: Twttr API on RapidAPI (twitter241) — current live source
+  source: rapidapi
+  poll_interval_seconds: 60  # 1-minute poll as requested
+  max_posts_per_kol: 20
+  include_media: true
+  # serve process keeps pulling while online (independent of browser)
+  auto_poll: true
+  auto_poll_max_analyze: 10
+
+market:
+  # yfinance symbols; aliases resolved via ticker map first
+  default_interval: 1d
+  history_days: 120
+  # cache market bars for N minutes
+  cache_ttl_seconds: 300
+  # quote polling is separate from historical-bar caching
+  quote_ttl_seconds: 30
+  # do not paper-fill when the quote is older than this threshold
+  max_quote_age_seconds: 900
+  # fallback is visible as sample_fallback and never counts as live data
+  allow_fallback: true
+  require_live_for_execution: true
+  # K-line chart data (TradingView-style UI)
+  # crypto: binance data-api (vision host; api.binance.com is geo-blocked here)
+  #          → OKX → yfinance. equities: yfinance only.
+  kline_cache_ttl_seconds: 30
+  kline_crypto_provider: binance
+  # Public data host works direct; set INTENT_TRADE_HTTP_PROXY in .env for
+  # api.binance.com if you switch base URL to the main site.
+  binance_data_base_url: https://data-api.binance.vision
+  okx_base_url: https://www.okx.com
+  kline_default_limit: 300
+  # leave empty — read INTENT_TRADE_HTTP_PROXY / HTTPS_PROXY / ALL_PROXY from env
+  http_proxy: ""
+  kline_proxy_okx: false
+
+analysis:
+  # llm (default, AI-driven) | hybrid | rule_based (emergency only)
+  mode: llm
+  llm_model: grok-4.5
+  confidence_threshold: 0.55
+  # deterministic fields only written when confidence >= this
+  structured_min_confidence: 0.7
+  # pending limit/stop plans expire instead of being chased forever
+  pending_signal_ttl_hours: 72
+  default_entry_mode: limit
+
+execution:
+  mode: paper  # paper only in Phase 1
+  default_position_size_usd: 1000
+  # fill model: mid / close / next_open
+  fill_price: close
+  # when KOL omits SL/TP, use ATR multiples or skip
+  default_stop_loss_pct: 0.03
+  default_take_profit_pct: 0.08
+  max_open_trades_per_symbol: 3
+  commission_bps: 5  # 0.05%
+  entry_tolerance_pct: 0
+
+backtest:
+  # evaluate open paper trades against latest price for win-rate
+  mark_to_market: true
+  # hit SL before TP => loss; hit TP before SL => win (using OHLC path)
+  path_resolution: conservative  # conservative: if both hit same bar, count loss

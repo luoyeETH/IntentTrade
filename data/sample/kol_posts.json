@@ -1,0 +1,110 @@
+[
+  {
+    "id": "tw_btc_001",
+    "author_username": "crypto_alpha_king",
+    "author_display_name": "CryptoAlphaKing",
+    "text": "BTC 62500附近分批做多，止损61000，第一目标69000，第二目标72000。仓位别太重。",
+    "created_at": "2026-07-10T08:00:00",
+    "url": "https://x.com/crypto_alpha_king/status/tw_btc_001",
+    "media_urls": [],
+    "media_transcripts": []
+  },
+  {
+    "id": "tw_btc_002",
+    "author_username": "crypto_alpha_king",
+    "author_display_name": "CryptoAlphaKing",
+    "text": "长期依然看涨比特币，下一牛市目标看到74000甚至更高。耐心拿住核心仓。",
+    "created_at": "2026-07-12T23:00:00",
+    "url": "https://x.com/crypto_alpha_king/status/tw_btc_002",
+    "media_urls": [],
+    "media_transcripts": []
+  },
+  {
+    "id": "tw_eth_001",
+    "author_username": "crypto_alpha_king",
+    "author_display_name": "CryptoAlphaKing",
+    "text": "ETH long entry 3450 SL 3300 TP 3800. High conviction setup.",
+    "created_at": "2026-07-11T14:30:00",
+    "url": "https://x.com/crypto_alpha_king/status/tw_eth_001"
+  },
+  {
+    "id": "tw_spy_001",
+    "author_username": "wallstreet_echo",
+    "author_display_name": "WallStreetEcho",
+    "text": "等待美股反弹后分批止盈，SPY 目前观望为主，别追高。",
+    "created_at": "2026-07-13T16:00:00",
+    "url": "https://x.com/wallstreet_echo/status/tw_spy_001"
+  },
+  {
+    "id": "tw_nvda_001",
+    "author_username": "wallstreet_echo",
+    "author_display_name": "WallStreetEcho",
+    "text": "NVDA breakout long @ 128 stop 122 target 145. AI demand still intact.",
+    "created_at": "2026-07-09T15:20:00",
+    "url": "https://x.com/wallstreet_echo/status/tw_nvda_001"
+  },
+  {
+    "id": "tw_tsla_001",
+    "author_username": "wallstreet_echo",
+    "author_display_name": "WallStreetEcho",
+    "text": "Short TSLA from 250, stop loss 265, take profit 230.",
+    "created_at": "2026-07-08T18:00:00",
+    "url": "https://x.com/wallstreet_echo/status/tw_tsla_001"
+  },
+  {
+    "id": "tw_sndk_001",
+    "author_username": "chip_watcher",
+    "author_display_name": "ChipWatcher",
+    "text": "闪迪存储涨价周期确认，SNDK 可以在 48 附近轻仓试多，止损 45，目标 55。",
+    "created_at": "2026-07-14T09:00:00",
+    "url": "https://x.com/chip_watcher/status/tw_sndk_001",
+    "media_urls": ["https://example.com/charts/sndk_setup.png"],
+    "media_transcripts": [
+      "Chart annotation: entry 48.0, stop 45.0, target 55.0, arrow long SNDK/闪迪"
+    ]
+  },
+  {
+    "id": "tw_sndk_002",
+    "author_username": "chip_watcher",
+    "author_display_name": "ChipWatcher",
+    "text": "SanDisk 产业链跟踪：NAND 价格环比改善，中期仍看多存储板块。",
+    "created_at": "2026-07-15T11:00:00",
+    "url": "https://x.com/chip_watcher/status/tw_sndk_002"
+  },
+  {
+    "id": "tw_mt_001",
+    "author_username": "a_share_scout",
+    "author_display_name": "A股侦察兵",
+    "text": "茅台回调到支撑位可关注，不急着开仓，等放量确认。长期逻辑仍在。",
+    "created_at": "2026-07-14T10:30:00",
+    "url": "https://x.com/a_share_scout/status/tw_mt_001"
+  },
+  {
+    "id": "tw_sol_001",
+    "author_username": "crypto_alpha_king",
+    "author_display_name": "CryptoAlphaKing",
+    "text": "SOL 开多 145，止损 138，止盈 165。",
+    "created_at": "2026-07-07T07:00:00",
+    "url": "https://x.com/crypto_alpha_king/status/tw_sol_001"
+  },
+  {
+    "id": "tw_btc_003",
+    "author_username": "wallstreet_echo",
+    "author_display_name": "WallStreetEcho",
+    "text": "比特币若跌破 61000 我会减仓，短期偏谨慎。",
+    "created_at": "2026-07-16T20:00:00",
+    "url": "https://x.com/wallstreet_echo/status/tw_btc_003"
+  },
+  {
+    "id": "tw_img_001",
+    "author_username": "crypto_alpha_king",
+    "author_display_name": "CryptoAlphaKing",
+    "text": "如图，这波BTC结构很清晰。",
+    "created_at": "2026-07-17T06:00:00",
+    "url": "https://x.com/crypto_alpha_king/status/tw_img_001",
+    "media_urls": ["https://example.com/charts/btc_plan.png"],
+    "media_transcripts": [
+      "Trading plan chart: BTC long entry 63100 stop 61800 TP1 67500 TP2 70000"
+    ]
+  }
+]

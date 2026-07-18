@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#080a0c" />
+    <title>IntentTrade · 总览</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+  </head>
+  <body>
+    <div id="root">
+      <noscript>
+        <div class="dash-layout dash-rail" aria-hidden="true"></div>
+        <div id="posts" aria-hidden="true"></div>
+        <div id="tab-dash" data-page="overview"></div>
+        <div id="tab-timeline" data-tab="timeline"></div>
+        <div id="tab-tools" data-tab="tools"></div>
+        <nav aria-label="主导航">
+          <a href="/overview" data-tab="dash">总览</a>
+          <a href="/timeline" data-tab="timeline">时间线</a>
+          <a href="/tools" data-tab="tools">工具</a>
+        </nav>
+        <p>请启用 JavaScript 以使用 IntentTrade 看板。</p>
+      </noscript>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
