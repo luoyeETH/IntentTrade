@@ -4,6 +4,20 @@
 
 用 **LLM 解析 Twitter/X 上 KOL 的交易意图**，在**明确的交易相关推文**上做记录与模拟跟单的研究型工具。
 
+## 界面预览
+
+### 市场意图总览
+
+结构化展示原始推文、交易方向、价格条件、执行状态与模型置信度。
+
+![IntentTrade 市场意图总览](docs/images/dashboard-overview.png)
+
+### 标的时间线
+
+把实时 K 线、做多/做空/成交/笔记标记与历史事件流放在同一时间轴上。
+
+![IntentTrade SNDK 标的时间线](docs/images/timeline-sndk.png)
+
 **项目目标**
 
 1. 持续监控指定 KOL 的推文和原图
