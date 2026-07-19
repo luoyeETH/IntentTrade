@@ -9,7 +9,6 @@ from rich.console import Console
 from rich.table import Table
 
 from intent_trade.analysis.intent import IntentAnalyzer
-from intent_trade.analysis.multimodal import enrich_post_with_vision
 from intent_trade.analysis.ticker_map import TickerMap
 from intent_trade.backtest.stats import PerformanceReporter
 from intent_trade.config import Settings, load_settings
@@ -18,9 +17,12 @@ from intent_trade.market.prices import MarketDataService
 from intent_trade.models.domain import (
     Direction,
     IntentAction,
+    IntentAnalysis,
     InstrumentNote,
+    PositionState,
     SignalState,
     SignalType,
+    SocialPost,
     TradingSignal,
 )
 from intent_trade.storage.db import Storage
@@ -74,8 +76,10 @@ class Pipeline:
         posts_new = self.ingest() if fetch else []
         if fetch:
             console.print(f"[dim]ingest done: {len(posts_new)} new posts[/dim]")
-        analyses = self.analyze_new_posts(vision=vision, max_analyze=max_analyze)
-        signals, notes = self.persist_analyses(analyses)
+        analyses, signals, notes = self.analyze_new_posts(
+            vision=vision,
+            max_analyze=max_analyze,
+        )
         trades = self.execute_pending_signals()
         settled: list = []
         if settle:
@@ -123,7 +127,7 @@ class Pipeline:
                 self.storage.upsert_post(p)
                 new.append(p)
             else:
-                # still upsert media transcripts if enriched
+                # Refresh text/media metadata for posts already seen.
                 self.storage.upsert_post(p)
         return new
 
@@ -132,8 +136,8 @@ class Pipeline:
         *,
         vision: bool = False,
         max_analyze: Optional[int] = None,
-    ) -> list:
-        """LLM-analyze posts that do not yet have a signal or note."""
+    ) -> tuple[list[IntentAnalysis], list[TradingSignal], list[InstrumentNote]]:
+        """Analyze and persist posts oldest-first so later posts see new history."""
         existing_posts = self.storage.list_posts(limit=500)
         done_post_ids = set()
         for s in self.storage.list_signals():
@@ -142,33 +146,33 @@ class Pipeline:
             done_post_ids.add(n.post_id)
 
         pending = [p for p in existing_posts if p.id not in done_post_ids]
+        pending.sort(key=lambda item: item.created_at)
         if max_analyze is not None:
             pending = pending[: max(0, max_analyze)]
         console.print(
             f"[dim]LLM analyze pending={len(pending)} "
-            f"(skip already recorded) vision={vision}[/dim]"
+            f"(skip already recorded; original images are analyzed automatically)[/dim]"
         )
 
-        results = []
+        results: list[IntentAnalysis] = []
+        signals: list[TradingSignal] = []
+        notes: list[InstrumentNote] = []
         for i, post in enumerate(pending, 1):
             console.print(
                 f"[cyan][{i}/{len(pending)}][/cyan] @{post.author_username} "
                 f"{post.id[:12]}… {post.text[:48].replace(chr(10), ' ')}"
             )
-            if vision:
-                post = enrich_post_with_vision(
-                    post, model=self.settings.analysis.llm_model
-                )
-                if post.media_transcripts:
-                    self.storage.upsert_post(post)
             try:
-                analysis = self.analyzer.analyze(post)
+                analysis = self.analyze_post(post)
             except Exception as e:
                 console.print(f"[red]analyze failed {post.id}: {e}[/red]")
                 continue
             self.storage.save_analysis(
                 post.id, post.author_username, analysis.model_dump(mode="json")
             )
+            new_signals, new_notes = self.persist_analyses([analysis])
+            signals.extend(new_signals)
+            notes.extend(new_notes)
             console.print(
                 f"  → {analysis.analyzer} {analysis.signal_type.value} "
                 f"{analysis.action.value} {analysis.direction.value} "
@@ -178,7 +182,186 @@ class Pipeline:
                 f"conf={analysis.confidence}"
             )
             results.append(analysis)
-        return results
+        return results, signals, notes
+
+    def analyze_post(self, post: SocialPost) -> IntentAnalysis:
+        """Analyze one post and reconcile it with recent same-KOL history."""
+
+        history = self._recent_kol_history(post)
+        analysis = self.analyzer.analyze(post, history=history)
+        self._apply_memory_actions(analysis, history)
+        return analysis
+
+    def _recent_kol_history(self, post: SocialPost) -> list[dict[str, Any]]:
+        config = self.settings.analysis
+        if not config.memory_enabled or config.memory_max_items <= 0:
+            return []
+        cutoff = post.created_at - timedelta(hours=config.memory_lookback_hours)
+        username = post.author_username.lstrip("@").lower()
+        candidates: list[tuple[Any, dict[str, Any]]] = []
+        eligible_states = {
+            SignalState.WAITING_MARKET_DATA,
+            SignalState.WAITING_ENTRY,
+            SignalState.READY,
+            SignalState.WAITING_RISK_LIMIT,
+        }
+
+        for signal in self.storage.list_signals():
+            if signal.post_id == post.id:
+                continue
+            if signal.kol_username.lstrip("@").lower() != username:
+                continue
+            if not (cutoff <= signal.signal_time < post.created_at):
+                continue
+            candidates.append(
+                (
+                    signal.signal_time,
+                    {
+                        "kind": "signal",
+                        "signal_id": signal.id,
+                        "post_id": signal.post_id,
+                        "time": signal.signal_time.isoformat(),
+                        "symbol": signal.symbol,
+                        "direction": signal.direction.value,
+                        "action": signal.action.value,
+                        "position_state": signal.position_state.value,
+                        "entry_mode": signal.entry_mode.value,
+                        "entry_price": signal.entry_price,
+                        "entry_price_low": signal.entry_price_low,
+                        "entry_price_high": signal.entry_price_high,
+                        "trigger_price": signal.trigger_price,
+                        "stop_loss": signal.stop_loss,
+                        "take_profit": signal.take_profit,
+                        "state": signal.state.value,
+                        "executed": signal.executed,
+                        "eligible_for_supersede": (
+                            not signal.executed and signal.state in eligible_states
+                        ),
+                        "summary": signal.summary,
+                        "source_text": signal.source_text,
+                    },
+                )
+            )
+
+        for note in self.storage.list_notes(limit=500):
+            if note.post_id == post.id or note.symbol in {"N/A", "UNKNOWN", ""}:
+                continue
+            if note.kol_username.lstrip("@").lower() != username:
+                continue
+            if not (cutoff <= note.note_time < post.created_at):
+                continue
+            candidates.append(
+                (
+                    note.note_time,
+                    {
+                        "kind": "note",
+                        "post_id": note.post_id,
+                        "time": note.note_time.isoformat(),
+                        "symbol": note.symbol,
+                        "direction": note.direction_hint.value,
+                        "content": note.content,
+                    },
+                )
+            )
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        selected: list[dict[str, Any]] = []
+        symbols: set[str] = set()
+        for _, item in candidates:
+            symbol = str(item.get("symbol") or "")
+            if symbol not in symbols and len(symbols) >= 3:
+                continue
+            symbols.add(symbol)
+            selected.append(item)
+            if len(selected) >= config.memory_max_items:
+                break
+        return selected
+
+    def _apply_memory_actions(
+        self,
+        analysis: IntentAnalysis,
+        history: list[dict[str, Any]],
+    ) -> list[str]:
+        memory = analysis.extracted_fields.get("memory") or {}
+        requested_ids = memory.get("supersede_signal_ids") or []
+        relation = str(memory.get("relation") or "")
+        related_symbol = str(memory.get("related_symbol") or "")
+        current_symbols = set(analysis.canonical_symbols)
+        if related_symbol:
+            current_symbols.add(related_symbol)
+        related_pending = [
+            item
+            for item in history
+            if item.get("kind") == "signal"
+            and item.get("eligible_for_supersede")
+            and item.get("symbol") in current_symbols
+        ]
+        if relation == "continues" and related_pending:
+            analysis.signal_type = SignalType.DESCRIPTIVE
+            analysis.descriptive_note = (
+                str(memory.get("summary") or "")
+                or analysis.summary
+                or analysis.raw_text
+            )
+            memory["suppressed_duplicate_signal"] = True
+            memory["applied_signal_ids"] = []
+            return []
+        if not requested_ids:
+            return []
+
+        target_directions = {
+            str(item.get("direction") or "")
+            for item in related_pending
+            if item.get("direction")
+        }
+        reverses_direction = (
+            relation == "reverses"
+            and analysis.direction in (Direction.LONG, Direction.SHORT)
+            and (
+                Direction.SHORT.value
+                if analysis.direction == Direction.LONG
+                else Direction.LONG.value
+            )
+            in target_directions
+        )
+        relation_matches_intent = (
+            relation == "confirms_entry"
+            and analysis.position_state == PositionState.ENTERED
+        ) or (
+            relation == "adjusts"
+            and analysis.action in (IntentAction.OPEN, IntentAction.ADD)
+            and analysis.position_state == PositionState.PLANNED
+        ) or (
+            relation == "exits"
+            and analysis.action in (IntentAction.CLOSE, IntentAction.REDUCE)
+        ) or relation == "cancels" or reverses_direction
+        if not relation_matches_intent:
+            memory["supersede_signal_ids"] = []
+            memory["applied_signal_ids"] = []
+            return []
+
+        allowed_symbols = set(analysis.canonical_symbols)
+        if related_symbol:
+            allowed_symbols.add(related_symbol)
+        eligible_by_id = {
+            str(item["signal_id"]): item
+            for item in history
+            if item.get("kind") == "signal"
+            and item.get("signal_id")
+            and item.get("eligible_for_supersede")
+            and item.get("symbol") in allowed_symbols
+        }
+        validated_ids = [
+            str(value) for value in requested_ids if str(value) in eligible_by_id
+        ]
+        applied = self.storage.mark_signals_superseded(
+            validated_ids,
+            replacement_post_id=analysis.post_id,
+            reason=str(memory.get("summary") or analysis.summary),
+        )
+        memory["supersede_signal_ids"] = validated_ids
+        memory["applied_signal_ids"] = applied
+        return applied
 
     @staticmethod
     def _levels_consistent(

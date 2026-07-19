@@ -155,6 +155,9 @@ def health() -> dict[str, Any]:
         "poller": poll,
         "analysis_mode": s.analysis.mode,
         "llm_model": s.analysis.llm_model,
+        "memory_enabled": s.analysis.memory_enabled,
+        "memory_lookback_hours": s.analysis.memory_lookback_hours,
+        "memory_max_items": s.analysis.memory_max_items,
         "timezone": s.app.timezone,
         "market_quote_ttl_seconds": s.market.quote_ttl_seconds,
         "market_require_live_for_execution": s.market.require_live_for_execution,
@@ -497,11 +500,12 @@ def api_fetch(
     username: str = Query("xtony1314"),
     limit: int = Query(10, ge=1, le=50),
     analyze: bool = Query(True),
-    vision: bool = Query(False, description="Enable image vision / OCR enrichment"),
+    vision: bool = Query(
+        False,
+        description="Deprecated; original images are analyzed automatically",
+    ),
 ) -> dict[str, Any]:
     """Pull latest posts for one KOL; optionally LLM-analyze new ones."""
-    from intent_trade.analysis.multimodal import enrich_post_with_vision
-
     pipe = _pipe()
     if pipe.feed_error:
         raise HTTPException(status_code=503, detail=pipe.feed_error)
@@ -514,8 +518,6 @@ def api_fetch(
     timezone_name = pipe.settings.app.timezone
     for p in posts:
         existed = pipe.storage.post_exists(p.id)
-        if vision:
-            p = enrich_post_with_vision(p, model=pipe.settings.analysis.llm_model)
         pipe.storage.upsert_post(p)
         stored_posts.append(p)
         if not existed:
@@ -531,7 +533,7 @@ def api_fetch(
                 continue
             if any(n.post_id == p.id for n in pipe.storage.list_notes(limit=500)):
                 continue
-            a = pipe.analyzer.analyze(p)
+            a = pipe.analyze_post(p)
             pipe.storage.save_analysis(
                 p.id, p.author_username, _model_payload(a, timezone_name)
             )

@@ -56,6 +56,10 @@ class AnalysisConfig(BaseModel):
     structured_min_confidence: float = 0.7
     pending_signal_ttl_hours: float = 72.0
     default_entry_mode: str = "limit"
+    memory_enabled: bool = True
+    memory_lookback_hours: float = 168.0
+    memory_max_items: int = 6
+    memory_min_confidence: float = 0.75
 
 
 class ExecutionConfig(BaseModel):

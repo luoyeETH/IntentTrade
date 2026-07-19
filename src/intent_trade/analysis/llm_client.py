@@ -29,6 +29,24 @@ def chat_json(
     timeout: Optional[float] = None,
 ) -> dict[str, Any]:
     """Call chat model and parse a JSON object from the response."""
+    return chat_json_content(
+        system,
+        user,
+        model=model,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+
+
+def chat_json_content(
+    system: str,
+    content: str | list[dict[str, Any]],
+    *,
+    model: Optional[str] = None,
+    max_tokens: int = 1200,
+    timeout: Optional[float] = None,
+) -> dict[str, Any]:
+    """Call the model with text or native multimodal content and parse JSON."""
     api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("INTENT_TRADE_LLM_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
@@ -44,7 +62,7 @@ def chat_json(
         model=model or default_model(),
         max_tokens=max_tokens,
         system=system,
-        messages=[{"role": "user", "content": user}],
+        messages=[{"role": "user", "content": content}],
     )
     raw = ""
     for block in msg.content:

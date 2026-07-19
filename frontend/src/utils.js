@@ -6,6 +6,7 @@ export const STATE_LABELS = {
   observed_position: "已入场观察",
   exit_intent: "退出意图",
   executed: "已模拟成交",
+  superseded: "已被后续更新取代",
   expired: "已过期",
   rejected: "已拒绝",
 };

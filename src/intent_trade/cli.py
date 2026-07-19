@@ -24,7 +24,7 @@ def run(
         False, help="Do not call Twitter API; only analyze posts already in DB"
     ),
     vision: bool = typer.Option(
-        False, help="Enable multimodal vision on images (slow/costly)"
+        False, help="Deprecated; original images are analyzed automatically"
     ),
     max_analyze: Optional[int] = typer.Option(
         None, help="Max posts to LLM-analyze this run"
@@ -165,7 +165,7 @@ def fetch_kol(
         if p.media_urls:
             console.print(f"[dim]media: {p.media_urls}[/dim]")
         if analyze:
-            a = pipe.analyzer.analyze(p)
+            a = pipe.analyze_post(p)
             console.print(
                 f"→ type={a.signal_type.value} dir={a.direction.value} "
                 f"symbols={a.canonical_symbols} "

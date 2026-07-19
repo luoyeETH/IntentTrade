@@ -74,6 +74,7 @@ class SignalState(str, Enum):
     OBSERVED_POSITION = "observed_position"
     EXIT_INTENT = "exit_intent"
     EXECUTED = "executed"
+    SUPERSEDED = "superseded"
     EXPIRED = "expired"
     REJECTED = "rejected"
 
@@ -115,7 +116,7 @@ class SocialPost(BaseModel):
     url: Optional[str] = None
     media_urls: list[str] = Field(default_factory=list)
     media_alt_texts: list[str] = Field(default_factory=list)
-    # Optional OCR / vision captions for images (filled by multimodal stage)
+    # Legacy imported captions. The active analyzer reads media_urls directly.
     media_transcripts: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
     fetched_at: datetime = Field(default_factory=datetime.utcnow)
@@ -127,7 +128,7 @@ class IntentAnalysis(BaseModel):
     post_id: str
     kol_username: str
     raw_text: str
-    # Combined text used for extraction (post + image transcripts)
+    # Source text used by the text stage; image evidence stays structured.
     analysis_text: str = ""
     mentioned_tickers: list[str] = Field(default_factory=list)
     canonical_symbols: list[str] = Field(default_factory=list)

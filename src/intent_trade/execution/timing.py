@@ -51,6 +51,12 @@ def evaluate_signal(
     """Evaluate one signal without mutating storage or placing a trade."""
 
     now = now or datetime.utcnow()
+    if signal.state == SignalState.SUPERSEDED:
+        return SignalDecision(
+            state=SignalState.SUPERSEDED,
+            reason=signal.decision_reason or "该计划已被后续推文更新取代",
+            evaluated_at=now,
+        )
     if signal.executed or signal.state == SignalState.EXECUTED:
         return SignalDecision(
             state=SignalState.EXECUTED,

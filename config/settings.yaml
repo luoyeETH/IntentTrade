@@ -81,6 +81,11 @@ analysis:
   # pending limit/stop plans expire instead of being chased forever
   pending_signal_ttl_hours: 72
   default_entry_mode: limit
+  # Review recent same-KOL instrument history after the current post is parsed.
+  memory_enabled: true
+  memory_lookback_hours: 168
+  memory_max_items: 6
+  memory_min_confidence: 0.75
 
 execution:
   mode: paper  # paper only in Phase 1

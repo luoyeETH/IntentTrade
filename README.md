@@ -6,7 +6,7 @@
 
 **项目目标**
 
-1. 持续监控指定 KOL 的推文（及可选图片信息）  
+1. 持续监控指定 KOL 的推文和原图
 2. 用大模型抽取：标的、方向、计划/已入场、市价/限价/突破、入场/触发/止损/止盈  
 3. 将**结构化喊单**与**非交易闲聊**分开存储  
 4. 在价格条件满足时做 **paper 跟单**，并统计 KOL 胜率  
@@ -37,6 +37,8 @@ Required Notice: Copyright IntentTrade contributors
 |------|------|
 | KOL 拉取（mock / RapidAPI / twitterapi.io / X API） | 可用 |
 | LLM 意图解析 + 规则兜底 | 可用 |
+| 原图直传识别（正文独立、逐图独立、最终汇总） | 可用 |
+| 标的级历史回看（计划调整、成交确认、撤销与旧单取代） | 可用 |
 | 结构化信号 vs 描述笔记 / 非交易推文（N/A） | 可用 |
 | 价格条件 paper 成交 + SL/TP 结算 | 可用 |
 | KOL 胜率统计 | 可用 |
@@ -91,7 +93,9 @@ Twitter 源（`config/settings.yaml` → `twitter.source`）：
 - `mock` — 本地样例  
 - `rapidapi` / `twitterapi_io` / `x_api` — 需在 `.env` 配置对应 key  
 
-LLM：兼容 Anthropic API 的 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `INTENT_TRADE_LLM_MODEL`。
+LLM：兼容 Anthropic API 的 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `INTENT_TRADE_LLM_MODEL`。含图片的帖子会自动执行正文识别、逐张原图视觉识别和最终汇总；单图共 3 次调用，多图为 N+2 次。可用 `INTENT_TRADE_VISION_MODEL` 单独指定视觉模型。
+
+历史回看默认检索同一 KOL 最近 7 天、最多 6 条、最多 3 个标的的强相关信号与笔记。后续推文明示改价、已成交、撤销、退出或反向时，旧未成交计划会标记为 `superseded`；已模拟成交记录不会被回滚。图片帖把回看合并进最终汇总调用，因此仍保持单图 3 次调用。
 
 可选代理（部分地区访问 Binance 主站受限时）：
 
@@ -140,7 +144,7 @@ grep -R "sk-" --include='*.py' --include='*.md' --include='*.yaml' . || true
 ## 路线图（非承诺）
 
 - 更稳的多源社交接入与去重  
-- 视觉图表 OCR 端到端  
+- 多图之间的标的关联与冲突诊断增强
 - 多 KOL 共识与风控  
 - 可选实盘适配器（独立授权与风控模块）  
 - 更完整的回测与资金曲线  

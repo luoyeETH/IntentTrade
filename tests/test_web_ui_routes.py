@@ -52,14 +52,19 @@ def test_css_near_black_grid_and_no_blue_chrome():
     assert "--shadow: none" in css or re.search(r"--shadow:\s*none", css)
 
 
-def test_layout_posts_right_rail():
+def test_post_review_workspace_has_bounded_linked_layout():
     html = INDEX_HTML.read_text(encoding="utf-8")
     css = FRONTEND_CSS.read_text(encoding="utf-8")
-    # React SPA shell keeps layout hooks in noscript fallback + CSS class names
+    app_source = (ROOT / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")
     assert "dash-layout" in html or "id=\"root\"" in html
-    assert "dash-rail" in html or "posts" in html
-    assert "dashboard-layout" in css or "dash-layout" in css
-    assert "posts-rail" in css or "dash-rail" in css
+    assert "PostReviewWorkspace" in app_source
+    assert "PostAnalysis" in app_source
+    assert "data-post-id" in app_source
+    assert "AI ANALYSIS" in app_source
+    assert "NotesTable" not in app_source
+    assert ".review-grid" in css
+    assert ".posts-rail.review-feed" in css
+    assert re.search(r"\.posts-rail\.review-feed[^}]+max-height", css)
     assert "grid-template-columns" in css
 
 

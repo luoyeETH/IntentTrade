@@ -443,6 +443,49 @@ class Storage:
                 )
             )
 
+    def mark_signals_superseded(
+        self,
+        signal_ids: list[str],
+        *,
+        replacement_post_id: str,
+        reason: str,
+    ) -> list[str]:
+        """Stop eligible pending signals after a later post revises the plan."""
+
+        ids = list(dict.fromkeys(str(value) for value in signal_ids if value))
+        if not ids:
+            return []
+        terminal_states = {
+            SignalState.EXECUTED.value,
+            SignalState.SUPERSEDED.value,
+            SignalState.EXPIRED.value,
+        }
+        with self.engine.begin() as conn:
+            eligible = list(
+                conn.scalars(
+                    select(signals_t.c.id).where(
+                        signals_t.c.id.in_(ids),
+                        signals_t.c.executed.is_(False),
+                        signals_t.c.state.not_in(terminal_states),
+                    )
+                )
+            )
+            if not eligible:
+                return []
+            detail = reason.strip() or "后续推文更新了交易计划"
+            conn.execute(
+                update(signals_t)
+                .where(signals_t.c.id.in_(eligible))
+                .values(
+                    state=SignalState.SUPERSEDED.value,
+                    decision_reason=(
+                        f"{detail}；replacement_post={replacement_post_id}"
+                    ),
+                    last_evaluated_at=datetime.utcnow(),
+                )
+            )
+        return eligible
+
     def list_signals(
         self,
         symbol: Optional[str] = None,
@@ -453,7 +496,10 @@ class Storage:
         if symbol:
             q = q.where(signals_t.c.symbol == symbol)
         if unexecuted_only:
-            q = q.where(signals_t.c.executed.is_(False))
+            q = q.where(
+                signals_t.c.executed.is_(False),
+                signals_t.c.state != SignalState.SUPERSEDED.value,
+            )
         if limit is not None:
             q = q.limit(limit)
         with self.engine.begin() as conn:

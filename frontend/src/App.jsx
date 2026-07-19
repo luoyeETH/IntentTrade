@@ -214,15 +214,6 @@ function TradesTable({ trades = [] }) {
   </DataTable>;
 }
 
-function NotesTable({ notes = [], navigate }) {
-  return <DataTable columns={["标的", "描述积累"]} empty="暂无描述积累">
-    {notes.map((note, index) => {
-      const nonTrade = isNonTradeSymbol(note.symbol);
-      return <tr key={note.id || `${note.symbol}-${index}`}><td data-label="标的">{nonTrade ? <span className="muted">N/A<small>非交易推文</small></span> : <a href={pathForTab("timeline", { symbol: note.symbol })} onClick={(event) => { event.preventDefault(); navigate("timeline", { symbol: note.symbol }); }}>{displaySymbol(note.symbol)}</a>}</td><td data-label="描述积累">{note.content || "—"}</td></tr>;
-    })}
-  </DataTable>;
-}
-
 function QuotesTable({ quotes = {} }) {
   return <DataTable columns={["标的", "现价", "来源", "时间", "实时", "新鲜度", "执行"]} empty="暂无行情">
     {Object.entries(quotes).map(([symbol, quote]) => <tr key={symbol}><td data-label="标的" className="mono">{symbol}</td><td data-label="现价" className="mono">{fmt(quote.price)}</td><td data-label="来源">{sourceLabel(quote.source) || "—"}</td><td data-label="时间">{timeText(quote.ts, "Asia/Shanghai", true)}</td><td data-label="实时"><span className={classNames("live-state", quote.is_live ? "live" : "stale")}>{quote.is_live ? "是" : "否"}</span></td><td data-label="新鲜度" className="mono">{quote.age_seconds == null ? "—" : `${Math.round(quote.age_seconds)}s`}</td><td data-label="执行"><span className={classNames("state", quoteUsable(quote) ? "ready" : "waiting_market_data")}>{quoteUsable(quote) ? "可执行" : "观察"}</span></td></tr>)}
@@ -236,8 +227,85 @@ function StatsTable({ stats = [], overall }) {
   </DataTable>;
 }
 
-function PostsRail({ posts = [] }) {
-  return <div className="posts-rail dash-rail"><SectionHeading eyebrow="FEED" title="最近原帖" action={<span className="time-zone">北京时间</span>} /><div className="post-list">{posts.length ? posts.map((post) => { const url = postUrl(post); return <article className="post-item" key={post.id}><div className="post-meta"><span>@{post.author_username || "—"}</span><time>{timeText(post.created_at, "Asia/Shanghai", true)}</time>{url ? <a href={url} target="_blank" rel="noreferrer" aria-label="打开原帖"><ExternalLink size={13} /></a> : null}</div><p>{post.text || "—"}</p>{(post.media_urls || []).slice(0, 2).map((media) => <img key={media} src={media} alt="" loading="lazy" />)}</article>; }) : <EmptyState>暂无原帖</EmptyState>}</div></div>;
+function PostAnalysis({ post, signals = [], notes = [], trades = [], navigate }) {
+  const postSignals = signals.filter((signal) => String(signal.post_id) === String(post?.id));
+  const postNotes = notes.filter((note) => String(note.post_id) === String(post?.id));
+  const signalIds = new Set(postSignals.map((signal) => String(signal.id)));
+  const postTrades = trades.filter((trade) => signalIds.has(String(trade.signal_id)));
+  const kind = postSignals.length ? "结构化信号" : postNotes.length ? "描述笔记" : "尚未解析";
+
+  if (!post) return <div className="review-analysis"><EmptyState>请选择一条原帖</EmptyState></div>;
+  return <aside className="review-analysis" aria-live="polite">
+    <div className="analysis-pane-head">
+      <div><span className="eyebrow">AI ANALYSIS</span><h3>{kind}</h3></div>
+      <span className="analysis-post-time">{timeText(post.created_at, "Asia/Shanghai", true)}</span>
+    </div>
+    {postSignals.map((signal) => {
+      const direction = dirToken(signal.direction);
+      const nonTrade = isNonTradeSymbol(signal.symbol);
+      return <div className="linked-analysis signal-analysis" key={signal.id}>
+        <div className="analysis-status-row">
+          <span className={classNames("direction", direction)}>{dirLabel(direction)}</span>
+          <span className={classNames("state", signal.state)}>{stateLabel(signal.state)}</span>
+          {!nonTrade ? <a href={pathForTab("timeline", { symbol: signal.symbol })} onClick={(event) => { event.preventDefault(); navigate("timeline", { symbol: signal.symbol }); }}>{displaySymbol(signal.symbol)}</a> : null}
+        </div>
+        <p className="analysis-summary">{signal.summary || "—"}</p>
+        <dl className="analysis-levels">
+          <div><dt>动作</dt><dd>{signal.action || "—"}</dd></div>
+          <div><dt>入场</dt><dd>{signal.entry_price_low != null ? `${fmt(signal.entry_price_low)}-${fmt(signal.entry_price_high)}` : fmt(signal.entry_price)}</dd></div>
+          <div><dt>止损</dt><dd>{fmt(signal.stop_loss)}</dd></div>
+          <div><dt>止盈</dt><dd>{fmt(signal.take_profit)}</dd></div>
+          <div><dt>置信</dt><dd>{fmt(signal.confidence)}</dd></div>
+          <div><dt>方式</dt><dd>{MODE_LABELS[signal.entry_mode] || signal.entry_mode || "—"}</dd></div>
+        </dl>
+        {signal.reasoning ? <div className="analysis-reasoning"><span>判断依据</span><p>{signal.reasoning}</p></div> : null}
+      </div>;
+    })}
+    {postNotes.map((note) => <div className="linked-analysis note-analysis" key={note.id}>
+      <div className="analysis-status-row"><span>描述积累</span>{!isNonTradeSymbol(note.symbol) ? <a href={pathForTab("timeline", { symbol: note.symbol })} onClick={(event) => { event.preventDefault(); navigate("timeline", { symbol: note.symbol }); }}>{displaySymbol(note.symbol)}</a> : null}<span className={classNames("direction", dirToken(note.direction_hint))}>{dirLabel(note.direction_hint)}</span></div>
+      <p className="analysis-summary">{note.content || "—"}</p>
+    </div>)}
+    {postTrades.length ? <div className="linked-analysis trade-analysis"><span className="analysis-block-label">关联模拟成交</span>{postTrades.map((trade) => <div className="linked-trade" key={trade.id}><strong>{fmt(trade.entry_price)}</strong><span className={classNames("trade-state", trade.status)}>{trade.status}</span><span>{fmt(trade.pnl_pct)}%</span></div>)}</div> : null}
+    {!postSignals.length && !postNotes.length ? <EmptyState>该原帖暂无 AI 解析记录</EmptyState> : null}
+  </aside>;
+}
+
+function PostReviewWorkspace({ posts = [], signals = [], notes = [], trades = [], navigate }) {
+  const [activePostId, setActivePostId] = useState("");
+  useEffect(() => {
+    if (!posts.length) setActivePostId("");
+    else if (!posts.some((post) => String(post.id) === String(activePostId))) setActivePostId(String(posts[0].id));
+  }, [posts, activePostId]);
+  const activePost = posts.find((post) => String(post.id) === String(activePostId)) || posts[0];
+  const handleScroll = (event) => {
+    const container = event.currentTarget;
+    const items = [...container.querySelectorAll("[data-post-id]")];
+    const threshold = container.scrollTop + 72;
+    let current = items[0];
+    for (const item of items) {
+      if (item.offsetTop <= threshold) current = item;
+      else break;
+    }
+    if (current?.dataset.postId) setActivePostId(current.dataset.postId);
+  };
+
+  return <section className="content-section review-section">
+    <SectionHeading eyebrow="POST REVIEW" title="原帖与 AI 解析" action={<span className="section-count">{posts.length} 条 · 北京时间</span>} />
+    <div className="review-grid dash-layout">
+      <div className="posts-rail review-feed post-list" onScroll={handleScroll} aria-label="最近原帖">
+        {posts.length ? posts.map((post) => {
+          const url = postUrl(post);
+          const active = String(post.id) === String(activePost?.id);
+          return <article className={classNames("post-item", active && "active")} data-post-id={post.id} key={post.id} tabIndex={0} onClick={() => setActivePostId(String(post.id))} onFocus={() => setActivePostId(String(post.id))}>
+            <div className="post-meta"><span>@{post.author_username || "—"}</span><time>{timeText(post.created_at, "Asia/Shanghai", true)}</time>{url ? <a href={url} target="_blank" rel="noreferrer" aria-label="打开原帖" onClick={(event) => event.stopPropagation()}><ExternalLink size={13} /></a> : null}</div>
+            <p>{post.text || "—"}</p>
+            {(post.media_urls || []).slice(0, 2).map((media) => <img key={media} src={media} alt="" loading="lazy" />)}
+          </article>;
+        }) : <EmptyState>暂无原帖</EmptyState>}
+      </div>
+      <PostAnalysis post={activePost} signals={signals} notes={notes} trades={trades} navigate={navigate} />
+    </div>
+  </section>;
 }
 
 function DashboardPage({ health, autoRefresh, onNavigate }) {
@@ -298,12 +366,13 @@ function DashboardPage({ health, autoRefresh, onNavigate }) {
     </div>
     {loading && !data ? <div className="loading-line"><LoaderCircle className="spin" size={17} />加载看板数据…</div> : <>
       <KpiStrip counts={counts} quoteValues={Object.values(quotes)} />
-      <div className="dashboard-layout dash-layout"><div className="dashboard-main">
+      <div className="dashboard-main">
         <section className="content-section"><SectionHeading eyebrow="SIGNALS" title="结构化信号" action={data?.signals?.length ? <span className="section-count">{data.signals.length} 条</span> : null} /><SignalTable signals={data?.signals} navigate={onNavigate} previousIds={lastIds} /></section>
-        <div className="split-sections"><section className="content-section"><SectionHeading eyebrow="PAPER TRADES" title="模拟成交" /><TradesTable trades={data?.trades} /></section><section className="content-section"><SectionHeading eyebrow="NOTES" title="描述积累" /><NotesTable notes={data?.notes} navigate={onNavigate} /></section></div>
+        <PostReviewWorkspace posts={data?.posts} signals={data?.signals} notes={data?.notes} trades={data?.trades} navigate={onNavigate} />
+        <section className="content-section"><SectionHeading eyebrow="PAPER TRADES" title="模拟成交" /><TradesTable trades={data?.trades} /></section>
         <section className="content-section"><SectionHeading eyebrow="MARKET DATA" title="行情状态" /><QuotesTable quotes={quotes} /></section>
         <section className="content-section"><SectionHeading eyebrow="PERFORMANCE" title="KOL 胜率" /><StatsTable stats={data?.kol_stats} overall={data?.overall} /></section>
-      </div><PostsRail posts={data?.posts} /></div>
+      </div>
     </>}
   </>;
 }

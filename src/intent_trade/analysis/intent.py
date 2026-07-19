@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from typing import Any, Optional
 
-from intent_trade.analysis.llm_client import chat_json, default_model, llm_enabled
+from intent_trade.analysis.llm_client import (
+    chat_json,
+    chat_json_content,
+    default_model,
+    llm_enabled,
+)
 from intent_trade.analysis.ticker_map import TickerMap
 from intent_trade.config import AnalysisConfig
 from intent_trade.models.domain import (
@@ -21,7 +28,7 @@ from intent_trade.models.domain import (
 
 SYSTEM_PROMPT = """你是专业的交易 KOL 意图结构化引擎。
 
-输入：社媒帖子原文（中/英口语、黑话、可能含 [image] OCR）。
+输入：社媒帖子原文（中/英口语、黑话）。
 输出：严格 JSON（不要 markdown、不要解释文字）。
 
 你必须完成：
@@ -56,6 +63,23 @@ SYSTEM_PROMPT = """你是专业的交易 KOL 意图结构化引擎。
 - 没有明确数字就不要填 entry/stop_loss/take_profit
 - “我在1300买入/已上车”是 entered；“1300买/到1300买/挂1300”是 planned + limit。
 - “现价买/市价开仓”才是 market；不要因为出现“买入”二字就默认立即成交。
+"""
+
+IMAGE_SYSTEM_PROMPT = """你是专业的交易图像分析引擎。你会直接查看原图，独立判断图中是否包含交易意图。
+
+只根据图片本身作答，不参考帖子正文，不从图片 URL 或文件名推断内容。结合图表走势、画线、标注、持仓或订单截图、可见文字和视觉关系，识别标的、方向、行为、入场、止损、止盈和触发条件。看不清或无法确定时必须返回 null/unknown，禁止编造。
+
+输出严格 JSON，不要 markdown 或解释性前缀。
+"""
+
+MERGE_SYSTEM_PROMPT = """你是专业的交易 KOL 多模态结果汇总引擎。
+
+输入是正文独立识别结果和逐张原图独立识别结果。你只负责交叉验证、解决冲突并生成一个最终交易意图。不得补充任何阶段中没有依据的标的或价格。正文与图片互补时可以合并；冲突且无法判断时降低置信度并保守输出。输出严格 JSON，不要 markdown 或解释性前缀。
+"""
+
+MEMORY_SYSTEM_PROMPT = """你是交易 KOL 的标的级状态记忆与计划变更分析引擎。
+
+输入包含当前推文的独立识别结果，以及同一 KOL 最近的信号和标的笔记。你要判断当前推文与历史计划的关系，并输出当前时点唯一、可执行且不重复的意图状态。历史只能用于理解延续、调整、成交确认、撤销或退出，不能覆盖当前推文明示的事实，也不能把旧价格误当成当前新指令。输出严格 JSON。
 """
 
 
@@ -102,11 +126,21 @@ class IntentAnalyzer:
         self.ticker_map = ticker_map
         self.config = config
 
-    def analyze(self, post: SocialPost) -> IntentAnalysis:
+    def analyze(
+        self,
+        post: SocialPost,
+        *,
+        history: Optional[list[dict[str, Any]]] = None,
+    ) -> IntentAnalysis:
         mode = (self.config.mode or "llm").lower()
         if mode != "rule_based" and llm_enabled():
             try:
-                return self._analyze_llm(post)
+                if self._image_urls(post):
+                    return self._analyze_multimodal(post, history=history)
+                current = self._analyze_llm(post)
+                if history and self.config.memory_enabled:
+                    return self._review_with_history(post, current, history)
+                return current
             except Exception as e:
                 fallback = self._analyze_fallback(post)
                 fallback.reasoning = f"llm_failed: {e}"
@@ -115,17 +149,31 @@ class IntentAnalyzer:
         return self._analyze_fallback(post)
 
     def _combined_text(self, post: SocialPost) -> str:
-        parts = [post.text or ""]
-        for t in post.media_transcripts or []:
-            if t:
-                parts.append(f"[image] {t}")
-        for a in post.media_alt_texts or []:
-            if a:
-                parts.append(f"[alt] {a}")
-        return "\n".join(parts).strip()
+        # Image evidence is handled by native vision calls, never flattened
+        # into OCR/caption text and mixed into the post body.
+        return (post.text or "").strip()
 
-    def _analyze_llm(self, post: SocialPost) -> IntentAnalysis:
-        text = self._combined_text(post)
+    @staticmethod
+    def _image_urls(post: SocialPost) -> list[str]:
+        return list(
+            dict.fromkeys(
+                url.strip()
+                for url in post.media_urls
+                if isinstance(url, str)
+                and url.strip().lower().startswith(("http://", "https://"))
+            )
+        )
+
+    def _analyze_llm(
+        self,
+        post: SocialPost,
+        *,
+        data_override: Optional[dict[str, Any]] = None,
+        analysis_text: Optional[str] = None,
+        analyzer: str = "llm",
+        stage_details: Optional[dict[str, Any]] = None,
+    ) -> IntentAnalysis:
+        text = self._combined_text(post) if analysis_text is None else analysis_text
         catalog = self.ticker_map.catalog_for_prompt()
         model = self.config.llm_model or default_model()
 
@@ -180,7 +228,11 @@ KOL: @{post.author_username}
 - entry_price_low/high 只在原文明确给出价格区间时填写；单点价格不要复制成区间。
 - evidence 只引用或短述真实原文依据；无法确认的字段置信度给 0。
 """
-        data = chat_json(SYSTEM_PROMPT, user, model=model, max_tokens=1400)
+        data = (
+            data_override
+            if data_override is not None
+            else chat_json(SYSTEM_PROMPT, user, model=model, max_tokens=1400)
+        )
 
         # learn aliases into registry
         learned = data.get("alias_learning") or []
@@ -230,6 +282,21 @@ KOL: @{post.author_username}
         signal_type = _enum_value(
             SignalType, data.get("signal_type"), SignalType.DESCRIPTIVE
         )
+        lower_text = text.lower()
+        explicit_entered = bool(
+            re.search(
+                r"(?:我\s*)?(?:已经|已在|已于|已).{0,12}(?:买入|上车|持有|开仓|开多|开空)"
+                r"|\b(?:already\s+(?:bought|entered)|i(?:'m| am)\s+holding)\b",
+                lower_text,
+            )
+        ) and not bool(
+            re.search(
+                r"(?:还没|尚未|未曾|没有|没).{0,6}(?:买入|上车|持有|开仓|开多|开空)",
+                lower_text,
+            )
+        )
+        if explicit_entered:
+            position_state = PositionState.ENTERED
 
         entry_f = _num(data.get("entry_price"))
         entry_low = _num(data.get("entry_price_low"))
@@ -275,7 +342,9 @@ KOL: @{post.author_username}
                 EntryMode.LIMIT,
             )
             entry_mode = (
-                EntryMode.STOP
+                EntryMode.MARKET
+                if position_state == PositionState.ENTERED
+                else EntryMode.STOP
                 if trigger_f is not None and entry_f is None
                 else configured_mode
                 if entry_f is not None
@@ -345,13 +414,280 @@ KOL: @{post.author_username}
             descriptive_note=note,
             plan_text=str(data.get("plan_text") or note),
             reasoning=str(data.get("reasoning") or "llm"),
-            extracted_fields={
+            extracted_fields=stage_details
+            or {
                 "raw": data,
                 "alias_learning": learned,
                 "model": model,
             },
-            analyzer="llm",
+            analyzer=analyzer,
         )
+
+    def _analyze_multimodal(
+        self,
+        post: SocialPost,
+        *,
+        history: Optional[list[dict[str, Any]]] = None,
+    ) -> IntentAnalysis:
+        """Analyze text and each original image independently, then reconcile."""
+        model = self.config.llm_model or default_model()
+        vision_model = os.getenv("INTENT_TRADE_VISION_MODEL") or model
+        catalog = self.ticker_map.catalog_for_prompt()
+        errors: list[dict[str, Any]] = []
+
+        text_result: Optional[dict[str, Any]] = None
+        try:
+            text_analysis = self._analyze_llm(post)
+            text_result = dict(text_analysis.extracted_fields.get("raw") or {})
+        except Exception as exc:
+            errors.append({"stage": "text", "error": str(exc)[:240]})
+
+        image_results: list[dict[str, Any]] = []
+        for index, url in enumerate(self._image_urls(post), 1):
+            prompt = f"""这是本帖第 {index} 张原图。请直接分析图片，而不是把图片转成 OCR 文本。
+
+已知标的库（canonical symbol + 别名，优先映射到这些 symbol）:
+{catalog}
+
+只输出一个 JSON 对象，字段：
+{{
+  "image_index": {index},
+  "image_type": "chart|position|order|news|meme|other|unknown",
+  "mentions": [],
+  "canonical_symbols": [],
+  "alias_learning": [],
+  "direction": "long|short|flat|unknown",
+  "action": "open|add|close|reduce|hold|watch|unknown",
+  "position_state": "planned|entered|exiting|unknown",
+  "entry_mode": "market|limit|stop|range|unknown",
+  "signal_type": "structured|descriptive",
+  "entry_price": null,
+  "entry_price_low": null,
+  "entry_price_high": null,
+  "trigger_price": null,
+  "stop_loss": null,
+  "take_profit": null,
+  "take_profit_levels": [],
+  "entry_condition": "",
+  "time_horizon": "unknown",
+  "validity_hours": null,
+  "confidence": 0.0,
+  "field_confidence": {{}},
+  "evidence": {{}},
+  "summary": "图片独立结论",
+  "descriptive_note": "",
+  "plan_text": "",
+  "reasoning": "基于哪些视觉证据得出结论"
+}}
+"""
+            content = [
+                {
+                    "type": "image",
+                    "source": {"type": "url", "url": url},
+                },
+                {"type": "text", "text": prompt},
+            ]
+            try:
+                result = chat_json_content(
+                    IMAGE_SYSTEM_PROMPT,
+                    content,
+                    model=vision_model,
+                    max_tokens=1400,
+                )
+                result["image_index"] = index
+                image_results.append(result)
+            except Exception as exc:
+                errors.append(
+                    {"stage": "image", "image_index": index, "error": str(exc)[:240]}
+                )
+
+        if text_result is None and not image_results:
+            details = "; ".join(item["error"] for item in errors)
+            raise RuntimeError(f"all multimodal analysis stages failed: {details}")
+
+        merge_input = {
+            "post": {
+                "kol": post.author_username,
+                "created_at": post.created_at.isoformat() if post.created_at else "",
+            },
+            "text_analysis": text_result,
+            "image_analyses": image_results,
+            "stage_errors": errors,
+            "recent_kol_history": history or [],
+        }
+        merge_prompt = f"""请汇总以下彼此独立的识别结果：
+{json.dumps(merge_input, ensure_ascii=False)}
+
+最终只输出一个 JSON 对象，字段必须为：
+mentions, canonical_symbols, alias_learning, direction, action, position_state,
+entry_mode, signal_type, entry_price, entry_price_low, entry_price_high,
+trigger_price, stop_loss, take_profit, take_profit_levels, entry_condition,
+time_horizon, validity_hours, confidence, field_confidence, evidence, summary,
+descriptive_note, plan_text, reasoning。
+
+若 recent_kol_history 非空，还必须输出：
+memory_relation（independent|continues|adjusts|confirms_entry|cancels|exits|reverses|uncertain）、
+memory_confidence（0-1）、related_symbol、supersede_signal_ids、memory_summary。
+
+汇总规则：
+- 每个价格都要能追溯到正文或某张图片的 evidence；不能把不同标的的价格拼在一起。
+- 正文与图片冲突时，在 reasoning 中写明冲突，并选择证据更明确的一方或输出 unknown/null。
+- 图片只是行情截图、新闻或表情图且没有交易行为时，不得把它升级成 structured。
+- evidence 的值标注来源，例如 text 或 image_1。
+- 历史只用于整理当前状态。当前说“已在 1345 上车”时，1345 是当前成交确认，不能继续保留旧计划的 1290-1300 作为当前入场价。
+- 仅当当前明确调整、确认成交、撤销、退出或反向时，才列出需要取代的旧未成交 signal id；不得列出已成交信号。
+"""
+
+        try:
+            final_data = chat_json(
+                MERGE_SYSTEM_PROMPT,
+                merge_prompt,
+                model=model,
+                max_tokens=1600,
+            )
+        except Exception as exc:
+            errors.append({"stage": "merge", "error": str(exc)[:240]})
+            final_data = text_result or image_results[0]
+
+        memory = self._memory_metadata(final_data, history or [])
+        return self._analyze_llm(
+            post,
+            data_override=final_data,
+            analysis_text=self._combined_text(post),
+            analyzer="llm_multimodal",
+            stage_details={
+                "raw": final_data,
+                "text_analysis": text_result,
+                "image_analyses": image_results,
+                "stage_errors": errors,
+                "model": model,
+                "vision_model": vision_model,
+                **({"memory": memory} if memory else {}),
+            },
+        )
+
+    def _review_with_history(
+        self,
+        post: SocialPost,
+        current: IntentAnalysis,
+        history: list[dict[str, Any]],
+    ) -> IntentAnalysis:
+        """Use one post-analysis call to reconcile the current intent with history."""
+
+        current_raw = dict(current.extracted_fields.get("raw") or {})
+        payload = {
+            "current_post": {
+                "id": post.id,
+                "created_at": post.created_at.isoformat() if post.created_at else "",
+                "text": post.text,
+            },
+            "current_independent_analysis": current_raw,
+            "recent_kol_history": history,
+        }
+        prompt = f"""请对当前推文做回看性整理：
+{json.dumps(payload, ensure_ascii=False)}
+
+输出一个扁平 JSON。首先完整输出当前最终意图字段：
+mentions, canonical_symbols, alias_learning, direction, action, position_state,
+entry_mode, signal_type, entry_price, entry_price_low, entry_price_high,
+trigger_price, stop_loss, take_profit, take_profit_levels, entry_condition,
+time_horizon, validity_hours, confidence, field_confidence, evidence, summary,
+descriptive_note, plan_text, reasoning。
+
+同时输出记忆字段：
+- memory_relation: independent|continues|adjusts|confirms_entry|cancels|exits|reverses|uncertain
+- memory_confidence: 0 到 1
+- related_symbol: 当前推文实际关联的 canonical symbol
+- supersede_signal_ids: 仅列出被当前推文明确定义为失效的旧未成交 signal id
+- memory_summary: 一句话说明状态如何从旧计划变化到当前状态
+
+规则：
+- 当前推文是主事实，历史只用于消歧和整理状态，不能把旧喊单伪装成当前新喊单。
+- “1290-1300 抄底”后说“已在 1345 上车”属于 confirms_entry：当前 entry_price=1345、position_state=entered，旧等待单应列入 supersede_signal_ids。
+- “改成 1345 买”属于 adjusts：当前是新的 planned 计划，旧等待单失效。
+- “继续等 1290”属于 continues，不应取代仍一致的旧计划，也不要制造重复的新开仓信号。
+- 已成交信号绝不能被取代；证据不足时 relation=uncertain 且 supersede_signal_ids=[]。
+"""
+        try:
+            reviewed = chat_json(
+                MEMORY_SYSTEM_PROMPT,
+                prompt,
+                model=self.config.llm_model or default_model(),
+                max_tokens=1700,
+            )
+        except Exception as exc:
+            current.extracted_fields["memory"] = {
+                "relation": "uncertain",
+                "confidence": 0.0,
+                "supersede_signal_ids": [],
+                "error": str(exc)[:240],
+            }
+            return current
+
+        memory = self._memory_metadata(reviewed, history)
+        return self._analyze_llm(
+            post,
+            data_override=reviewed,
+            analysis_text=self._combined_text(post),
+            analyzer="llm_memory",
+            stage_details={
+                **current.extracted_fields,
+                "raw": reviewed,
+                "pre_memory_analysis": current_raw,
+                "memory": memory,
+            },
+        )
+
+    def _memory_metadata(
+        self,
+        data: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not history:
+            return {}
+        relation = str(data.get("memory_relation") or "uncertain").strip().lower()
+        allowed_relations = {
+            "independent",
+            "continues",
+            "adjusts",
+            "confirms_entry",
+            "cancels",
+            "exits",
+            "reverses",
+            "uncertain",
+        }
+        if relation not in allowed_relations:
+            relation = "uncertain"
+        confidence = _confidence(data.get("memory_confidence"), 0.0)
+        eligible_ids = {
+            str(item.get("signal_id"))
+            for item in history
+            if item.get("kind") == "signal"
+            and item.get("eligible_for_supersede")
+            and item.get("signal_id")
+        }
+        raw_ids = data.get("supersede_signal_ids") or []
+        if isinstance(raw_ids, (str, int)):
+            raw_ids = [raw_ids]
+        can_supersede = relation in {
+            "adjusts",
+            "confirms_entry",
+            "cancels",
+            "exits",
+            "reverses",
+        } and confidence >= self.config.memory_min_confidence
+        supersede_ids = (
+            [str(value) for value in raw_ids if str(value) in eligible_ids]
+            if can_supersede
+            else []
+        )
+        return {
+            "relation": relation,
+            "confidence": confidence,
+            "related_symbol": str(data.get("related_symbol") or ""),
+            "supersede_signal_ids": list(dict.fromkeys(supersede_ids)),
+            "summary": str(data.get("memory_summary") or ""),
+        }
 
     def _analyze_fallback(self, post: SocialPost) -> IntentAnalysis:
         """Conservative parser for outages and local/offline operation.

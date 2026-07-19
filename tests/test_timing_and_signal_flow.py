@@ -7,13 +7,21 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from intent_trade.analysis.intent import IntentAnalyzer
 import intent_trade.analysis.intent as intent_module
 from intent_trade.analysis.ticker_map import TickerMap
-from intent_trade.config import AnalysisConfig, ExecutionConfig
+from intent_trade.config import (
+    AnalysisConfig,
+    AppConfig,
+    ExecutionConfig,
+    Settings,
+    TwitterConfig,
+)
 from intent_trade.execution.paper import PaperBroker
 from intent_trade.execution.timing import evaluate_signal
 from intent_trade.models.domain import (
@@ -21,11 +29,14 @@ from intent_trade.models.domain import (
     EntryMode,
     IntentAction,
     MarketSnapshot,
+    IntentAnalysis,
     PositionState,
     SignalState,
+    SignalType,
     SocialPost,
     TradingSignal,
 )
+from intent_trade.pipeline.runner import Pipeline
 from intent_trade.storage.db import Storage
 from intent_trade.time_utils import format_display_time
 
@@ -120,6 +131,347 @@ def test_llm_prompt_and_normalization_accept_structured_response() -> None:
         assert analysis.field_confidence["entry"] == 0.99
     finally:
         intent_module.chat_json = original
+
+
+def test_explicit_already_entered_overrides_planned_model_output() -> None:
+    analyzer = IntentAnalyzer(
+        TickerMap(ROOT / "config" / "ticker_aliases.yaml"),
+        AnalysisConfig(mode="llm"),
+    )
+    analysis = analyzer._analyze_llm(
+        SocialPost(
+            id="entered-guard",
+            author_username="kol",
+            text="1345 闪迪我已经上车了",
+            created_at=_now(),
+        ),
+        data_override={
+            "mentions": ["闪迪"],
+            "canonical_symbols": ["SNDK"],
+            "direction": "long",
+            "action": "open",
+            "position_state": "planned",
+            "entry_mode": "unknown",
+            "signal_type": "structured",
+            "entry_price": 1345,
+            "confidence": 0.95,
+            "summary": "模型错误标成计划入场",
+        },
+    )
+
+    assert analysis.position_state == PositionState.ENTERED
+    assert analysis.entry_mode == EntryMode.MARKET
+
+
+@pytest.mark.parametrize(("image_count", "expected_calls"), [(1, 3), (2, 4)])
+def test_multimodal_analyzes_original_images_independently_then_merges(
+    monkeypatch: pytest.MonkeyPatch,
+    image_count: int,
+    expected_calls: int,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    text_result = {
+        "mentions": ["闪迪"],
+        "canonical_symbols": ["SNDK"],
+        "direction": "unknown",
+        "action": "watch",
+        "position_state": "unknown",
+        "entry_mode": "unknown",
+        "signal_type": "descriptive",
+        "confidence": 0.6,
+        "summary": "正文提到闪迪，等待图片给出计划",
+        "evidence": {"symbol": "text: 闪迪"},
+    }
+    final_result = {
+        "mentions": ["闪迪"],
+        "canonical_symbols": ["SNDK"],
+        "direction": "long",
+        "action": "open",
+        "position_state": "planned",
+        "entry_mode": "limit",
+        "signal_type": "structured",
+        "entry_price": 1300,
+        "stop_loss": 1200,
+        "take_profit": 1500,
+        "confidence": 0.95,
+        "summary": "正文标的与图片计划合并",
+        "evidence": {"entry": "image_1: 图中入场线 1300"},
+    }
+
+    def fake_chat_json(system, user, **kwargs):
+        calls.append(("text" if system == intent_module.SYSTEM_PROMPT else "merge", user))
+        if system == intent_module.MERGE_SYSTEM_PROMPT:
+            assert '"image_analyses"' in user
+            return final_result
+        assert "legacy OCR text" not in user
+        return text_result
+
+    def fake_chat_json_content(system, content, **kwargs):
+        calls.append(("image", content))
+        assert system == intent_module.IMAGE_SYSTEM_PROMPT
+        image_block = content[0]
+        assert image_block["type"] == "image"
+        assert image_block["source"]["type"] == "url"
+        assert image_block["source"]["url"].startswith("https://img.test/")
+        return {
+            **final_result,
+            "summary": "图片独立交易计划",
+            "evidence": {"entry": "图中入场线 1300"},
+        }
+
+    monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
+    monkeypatch.setattr(intent_module, "chat_json", fake_chat_json)
+    monkeypatch.setattr(intent_module, "chat_json_content", fake_chat_json_content)
+
+    analyzer = IntentAnalyzer(
+        TickerMap(ROOT / "config" / "ticker_aliases.yaml"),
+        AnalysisConfig(mode="llm"),
+    )
+    post = SocialPost(
+        id=f"multimodal-{image_count}",
+        author_username="kol",
+        text="闪迪看这张图",
+        created_at=_now(),
+        media_urls=[f"https://img.test/{index}.jpg" for index in range(image_count)],
+        media_transcripts=["legacy OCR text must not enter the text stage"],
+    )
+
+    analysis = analyzer.analyze(
+        post,
+        history=[
+            {
+                "kind": "note",
+                "post_id": "older-note",
+                "time": (_now() - timedelta(hours=1)).isoformat(),
+                "symbol": "SNDK",
+                "content": "此前关注闪迪",
+            }
+        ],
+    )
+
+    assert len(calls) == expected_calls
+    assert [kind for kind, _ in calls].count("text") == 1
+    assert [kind for kind, _ in calls].count("image") == image_count
+    assert [kind for kind, _ in calls].count("merge") == 1
+    assert analysis.analyzer == "llm_multimodal"
+    assert analysis.analysis_text == post.text
+    assert analysis.entry_price == 1300
+    assert len(analysis.extracted_fields["image_analyses"]) == image_count
+    assert analysis.extracted_fields["memory"]["relation"] == "uncertain"
+
+
+def test_memory_review_supersedes_old_pending_plan_after_entry_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    now = _now()
+    settings = Settings(
+        app=AppConfig(db_path=str(tmp_path / "memory.db")),
+        twitter=TwitterConfig(source="mock", auto_poll=False),
+        analysis=AnalysisConfig(mode="llm", memory_enabled=True),
+    )
+    pipe = Pipeline(settings)
+    old_post = SocialPost(
+        id="old-plan",
+        author_username="kol",
+        text="闪迪 1290-1300 抄底",
+        created_at=now - timedelta(hours=2),
+    )
+    pipe.storage.upsert_post(old_post)
+    old_signal = _signal(
+        id="old-signal",
+        post_id=old_post.id,
+        kol_username="kol",
+        symbol="SNDK",
+        entry_mode=EntryMode.RANGE,
+        entry_price=1295,
+        entry_price_low=1290,
+        entry_price_high=1300,
+        signal_time=old_post.created_at,
+        state=SignalState.WAITING_ENTRY,
+        source_text=old_post.text,
+    )
+    pipe.storage.insert_signal(old_signal)
+    current_post = SocialPost(
+        id="entry-confirmation",
+        author_username="kol",
+        text="1345 闪迪我上车了",
+        created_at=now,
+    )
+    pipe.storage.upsert_post(current_post)
+
+    calls: list[str] = []
+    current_result = {
+        "mentions": ["闪迪"],
+        "canonical_symbols": ["SNDK"],
+        "direction": "long",
+        "action": "open",
+        "position_state": "entered",
+        "entry_mode": "market",
+        "signal_type": "structured",
+        "entry_price": 1345,
+        "confidence": 0.95,
+        "summary": "1345 已上车闪迪",
+        "evidence": {"entry": "1345 闪迪我上车了"},
+    }
+
+    def fake_chat_json(system, user, **kwargs):
+        calls.append(system)
+        if system == intent_module.MEMORY_SYSTEM_PROMPT:
+            assert '"entry_price_low": 1290' in user
+            assert '"state": "waiting_entry"' in user
+            return {
+                **current_result,
+                "memory_relation": "confirms_entry",
+                "memory_confidence": 0.96,
+                "related_symbol": "SNDK",
+                "supersede_signal_ids": [old_signal.id],
+                "memory_summary": "1345 已上车，取代 1290-1300 的旧等待计划",
+                "reasoning": "当前推文确认已经入场，旧限价计划不应继续等待",
+            }
+        return current_result
+
+    monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
+    monkeypatch.setattr(intent_module, "chat_json", fake_chat_json)
+
+    analysis = pipe.analyze_post(current_post)
+
+    assert calls == [intent_module.SYSTEM_PROMPT, intent_module.MEMORY_SYSTEM_PROMPT]
+    assert analysis.position_state == PositionState.ENTERED
+    assert analysis.entry_price == 1345
+    assert analysis.extracted_fields["memory"]["relation"] == "confirms_entry"
+    assert analysis.extracted_fields["memory"]["applied_signal_ids"] == [old_signal.id]
+    stored_old = next(s for s in pipe.storage.list_signals() if s.id == old_signal.id)
+    assert stored_old.state == SignalState.SUPERSEDED
+    assert "1345 已上车" in stored_old.decision_reason
+    assert old_signal.id not in {
+        signal.id for signal in pipe.storage.list_signals(unexecuted_only=True)
+    }
+
+
+def test_unchanged_continuation_does_not_create_a_duplicate_signal(
+    tmp_path: Path,
+) -> None:
+    now = _now()
+    pipe = Pipeline(
+        Settings(
+            app=AppConfig(db_path=str(tmp_path / "continuation.db")),
+            twitter=TwitterConfig(source="mock", auto_poll=False),
+        )
+    )
+    old_signal = _signal(
+        id="continuing-signal",
+        post_id="old-plan",
+        signal_time=now - timedelta(hours=1),
+        state=SignalState.WAITING_ENTRY,
+    )
+    pipe.storage.insert_signal(old_signal)
+    current_post = SocialPost(
+        id="continue-post",
+        author_username="kol",
+        text="闪迪继续等 1300",
+        created_at=now,
+    )
+    history = pipe._recent_kol_history(current_post)
+    analysis = IntentAnalysis(
+        post_id=current_post.id,
+        kol_username="kol",
+        raw_text=current_post.text,
+        canonical_symbols=["SNDK"],
+        direction=Direction.LONG,
+        action=IntentAction.OPEN,
+        position_state=PositionState.PLANNED,
+        entry_mode=EntryMode.LIMIT,
+        signal_type=SignalType.STRUCTURED,
+        entry_price=1300,
+        confidence=0.95,
+        summary="继续等待 1300",
+        extracted_fields={
+            "memory": {
+                "relation": "continues",
+                "confidence": 0.96,
+                "related_symbol": "SNDK",
+                "supersede_signal_ids": [],
+                "summary": "原 1300 等待计划保持不变",
+            }
+        },
+    )
+
+    assert pipe._apply_memory_actions(analysis, history) == []
+    assert analysis.signal_type == SignalType.DESCRIPTIVE
+    assert analysis.extracted_fields["memory"]["suppressed_duplicate_signal"] is True
+    assert pipe.storage.list_signals()[0].state == SignalState.WAITING_ENTRY
+
+
+def test_batch_persists_oldest_post_before_reviewing_the_next(
+    tmp_path: Path,
+) -> None:
+    now = _now()
+    pipe = Pipeline(
+        Settings(
+            app=AppConfig(db_path=str(tmp_path / "ordered.db")),
+            twitter=TwitterConfig(source="mock", auto_poll=False),
+            analysis=AnalysisConfig(mode="rule_based"),
+        )
+    )
+    first = SocialPost(
+        id="batch-first",
+        author_username="kol",
+        text="闪迪 1300 买",
+        created_at=now - timedelta(minutes=10),
+    )
+    second = SocialPost(
+        id="batch-second",
+        author_username="kol",
+        text="闪迪继续等待",
+        created_at=now,
+    )
+    pipe.storage.upsert_post(second)
+    pipe.storage.upsert_post(first)
+    seen_history: list[list[dict]] = []
+
+    class FakeAnalyzer:
+        def analyze(self, post, *, history=None):
+            seen_history.append(list(history or []))
+            if post.id == first.id:
+                return IntentAnalysis(
+                    post_id=post.id,
+                    kol_username="kol",
+                    raw_text=post.text,
+                    analysis_text=post.text,
+                    canonical_symbols=["SNDK"],
+                    direction=Direction.LONG,
+                    action=IntentAction.OPEN,
+                    position_state=PositionState.PLANNED,
+                    entry_mode=EntryMode.LIMIT,
+                    signal_type=SignalType.STRUCTURED,
+                    entry_price=1300,
+                    confidence=0.95,
+                    summary="1300 计划买入",
+                )
+            return IntentAnalysis(
+                post_id=post.id,
+                kol_username="kol",
+                raw_text=post.text,
+                analysis_text=post.text,
+                canonical_symbols=["SNDK"],
+                direction=Direction.LONG,
+                action=IntentAction.WATCH,
+                signal_type=SignalType.DESCRIPTIVE,
+                confidence=0.8,
+                summary="继续等待",
+                descriptive_note="继续等待",
+            )
+
+    pipe.analyzer = FakeAnalyzer()
+    analyses, signals, notes = pipe.analyze_new_posts()
+
+    assert [item.post_id for item in analyses] == [first.id, second.id]
+    assert seen_history[0] == []
+    assert any(item.get("post_id") == first.id for item in seen_history[1])
+    assert len(signals) == 1
+    assert len(notes) == 1
 
 
 def test_limit_long_waits_above_requested_price() -> None:
