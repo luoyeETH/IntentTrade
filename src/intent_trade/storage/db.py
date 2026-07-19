@@ -24,6 +24,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 
 from intent_trade.models.domain import (
@@ -54,6 +55,7 @@ posts_t = Table(
     Column("created_at", DateTime, index=True),
     Column("url", String(512)),
     Column("media_urls_json", Text),
+    Column("media_alt_texts_json", Text),
     Column("media_transcripts_json", Text),
     Column("raw_json", Text),
     Column("fetched_at", DateTime),
@@ -203,6 +205,10 @@ _SIGNAL_MIGRATIONS = {
     "evidence_json": "TEXT",
 }
 
+_POST_MIGRATIONS = {
+    "media_alt_texts_json": "TEXT",
+}
+
 
 class Storage:
     def __init__(self, db_path: Path) -> None:
@@ -216,27 +222,32 @@ class Storage:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Add newer signal fields without dropping an existing journal."""
+        """Add newer fields without dropping or rewriting the existing journal."""
 
         inspector = inspect(self.engine)
-        existing = {
-            column["name"]
-            for column in inspector.get_columns("trading_signals")
-        }
-        missing = {
-            name: sql_type
-            for name, sql_type in _SIGNAL_MIGRATIONS.items()
-            if name not in existing
-        }
-        if not missing:
-            return
         with self.engine.begin() as conn:
-            for name, sql_type in missing.items():
-                conn.exec_driver_sql(
-                    f"ALTER TABLE trading_signals ADD COLUMN {name} {sql_type}"
-                )
+            for table_name, migrations in (
+                ("social_posts", _POST_MIGRATIONS),
+                ("trading_signals", _SIGNAL_MIGRATIONS),
+            ):
+                existing = {
+                    column["name"]
+                    for column in inspector.get_columns(table_name)
+                }
+                for name, sql_type in migrations.items():
+                    if name not in existing:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE {table_name} ADD COLUMN {name} {sql_type}"
+                        )
 
-    def upsert_post(self, post: SocialPost) -> None:
+    def insert_post(self, post: SocialPost) -> bool:
+        """Archive the first fetched snapshot of a post without overwriting it.
+
+        A later timeline response may omit a deleted post or return changed or
+        incomplete metadata. The archive is append-only by post id, so the first
+        complete snapshot remains available for analysis and review.
+        """
+
         row = {
             "id": post.id,
             "platform": post.platform,
@@ -246,20 +257,23 @@ class Storage:
             "created_at": post.created_at,
             "url": post.url,
             "media_urls_json": _j(post.media_urls),
+            "media_alt_texts_json": _j(post.media_alt_texts),
             "media_transcripts_json": _j(post.media_transcripts),
             "raw_json": _j(post.raw),
             "fetched_at": post.fetched_at,
         }
         with self.engine.begin() as conn:
-            existing = conn.execute(
-                select(posts_t.c.id).where(posts_t.c.id == post.id)
-            ).first()
-            if existing:
-                conn.execute(
-                    update(posts_t).where(posts_t.c.id == post.id).values(**row)
-                )
-            else:
-                conn.execute(posts_t.insert().values(**row))
+            result = conn.execute(
+                sqlite_insert(posts_t)
+                .values(**row)
+                .on_conflict_do_nothing(index_elements=[posts_t.c.id])
+            )
+        return result.rowcount == 1
+
+    def upsert_post(self, post: SocialPost) -> bool:
+        """Backward-compatible alias; existing post snapshots stay immutable."""
+
+        return self.insert_post(post)
 
     def list_posts(
         self, username: Optional[str] = None, limit: int = 200
@@ -279,6 +293,7 @@ class Storage:
                 created_at=r["created_at"],
                 url=r["url"],
                 media_urls=_uj(r["media_urls_json"], []),
+                media_alt_texts=_uj(r["media_alt_texts_json"], []),
                 media_transcripts=_uj(r["media_transcripts_json"], []),
                 raw=_uj(r["raw_json"], {}),
                 fetched_at=r["fetched_at"] or datetime.utcnow(),
@@ -317,6 +332,7 @@ class Storage:
             created_at=r["created_at"],
             url=r["url"],
             media_urls=_uj(r["media_urls_json"], []),
+            media_alt_texts=_uj(r["media_alt_texts_json"], []),
             media_transcripts=_uj(r["media_transcripts_json"], []),
             raw=_uj(r["raw_json"], {}),
             fetched_at=r["fetched_at"] or datetime.utcnow(),
@@ -345,6 +361,7 @@ class Storage:
                 created_at=r["created_at"],
                 url=r["url"],
                 media_urls=_uj(r["media_urls_json"], []),
+                media_alt_texts=_uj(r["media_alt_texts_json"], []),
                 media_transcripts=_uj(r["media_transcripts_json"], []),
                 raw=_uj(r["raw_json"], {}),
                 fetched_at=r["fetched_at"] or datetime.utcnow(),

@@ -47,6 +47,8 @@ frontend/dist/
 logs/
 data/db/*.db
 data/db/*.db-journal
+data/db/*.db-*
+data/db/*.db.*
 data/cache/
 !data/sample/**
 

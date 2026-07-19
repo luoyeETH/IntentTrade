@@ -8,6 +8,7 @@ from intent_trade.analysis.llm_client import chat_json_agent
 
 def test_anthropic_tool_loop_returns_json_and_trace(monkeypatch) -> None:
     calls = []
+    client_options = {}
     responses = [
         SimpleNamespace(
             content=[
@@ -36,6 +37,7 @@ def test_anthropic_tool_loop_returns_json_and_trace(monkeypatch) -> None:
 
     class FakeAnthropic:
         def __init__(self, **kwargs):
+            client_options.update(kwargs)
             self.messages = FakeMessages()
 
     monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
@@ -65,6 +67,7 @@ def test_anthropic_tool_loop_returns_json_and_trace(monkeypatch) -> None:
     assert data["canonical_symbols"] == ["BTC-USD"]
     assert trace[0]["tool"] == "get_market_snapshot"
     assert calls[1]["messages"][-1]["content"][0]["type"] == "tool_result"
+    assert client_options["max_retries"] == 0
 
 
 def test_tool_budget_forces_a_final_tool_free_response(monkeypatch) -> None:

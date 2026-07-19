@@ -150,11 +150,18 @@ def health() -> dict[str, Any]:
         "poll_interval_seconds": s.twitter.poll_interval_seconds,
         "auto_poll": bool(getattr(s.twitter, "auto_poll", True)),
         "auto_poll_max_analyze": int(
-            getattr(s.twitter, "auto_poll_max_analyze", 10) or 10
+            getattr(s.twitter, "auto_poll_max_analyze", 1) or 1
+        ),
+        "auto_poll_agent_tools": bool(
+            getattr(s.twitter, "auto_poll_agent_tools", False)
         ),
         "poller": poll,
         "analysis_mode": s.analysis.mode,
         "llm_model": s.analysis.llm_model,
+        "classifier_model": (
+            s.analysis.classifier_model or s.analysis.llm_model
+        ),
+        "classifier_min_confidence": s.analysis.classifier_min_confidence,
         "memory_enabled": s.analysis.memory_enabled,
         "memory_lookback_hours": s.analysis.memory_lookback_hours,
         "memory_max_items": s.analysis.memory_max_items,
@@ -519,10 +526,9 @@ def api_fetch(
     stored_posts = []
     timezone_name = pipe.settings.app.timezone
     for p in posts:
-        existed = pipe.storage.post_exists(p.id)
-        pipe.storage.upsert_post(p)
+        inserted = pipe.storage.insert_post(p)
         stored_posts.append(p)
-        if not existed:
+        if inserted:
             new_ids.append(p.id)
 
     analyses_out: list[dict[str, Any]] = []

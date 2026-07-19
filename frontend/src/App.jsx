@@ -41,6 +41,7 @@ import {
 import "./styles.css";
 
 const DEFAULT_SYMBOLS = ["SNDK", "BTC-USD", "ETH-USD", "SOL-USD", "NVDA", "TSLA"];
+const LIVE_REFRESH_MS = 15000;
 const INTERVAL_OPTIONS = [
   { value: "1m", label: "1分" },
   { value: "5m", label: "5分" },
@@ -100,7 +101,11 @@ function healthSummary(health) {
   if (!health) return { label: "连接中", tone: "neutral" };
   if (!health.feed_ready) return { label: "数据源异常", tone: "danger" };
   if (health.auto_poll === false || health.poller?.enabled === false) return { label: "自动拉取已关", tone: "warning" };
-  if (health.poller?.last_error) return { label: "拉取异常", tone: "danger" };
+  if (health.poller?.last_fetch_error) return { label: "拉取异常", tone: "danger" };
+  if (health.poller?.last_analysis_error) return { label: "AI 解析异常", tone: "danger" };
+  if (health.poller?.analysis_running) return { label: "AI 解析中", tone: "success" };
+  if (health.poller?.fetch_running) return { label: "拉取中", tone: "success" };
+  if (health.poller?.last_error) return { label: "后台异常", tone: "danger" };
   if (health.poller?.running) return { label: "同步中", tone: "success" };
   return { label: "在线", tone: "success" };
 }
@@ -145,7 +150,7 @@ function Shell({ route, symbol, health, autoRefresh, setAutoRefresh, onNavigate,
         </div>
         <label className="refresh-control">
           <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
-          <span>自动刷新</span><em>60s</em>
+          <span>自动刷新</span><em>15s</em>
         </label>
       </nav>
       <main className="page-content">{children}</main>
@@ -339,7 +344,7 @@ function DashboardPage({ health, autoRefresh, onNavigate }) {
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
     if (!autoRefresh) return undefined;
-    const timer = window.setInterval(() => refresh(true), 60000);
+    const timer = window.setInterval(() => refresh(true), LIVE_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [autoRefresh, refresh]);
 
@@ -548,7 +553,7 @@ export default function App() {
   useEffect(() => { refreshHealth(); }, [refreshHealth]);
   useEffect(() => {
     if (!autoRefresh) return undefined;
-    const timer = window.setInterval(refreshHealth, 60000);
+    const timer = window.setInterval(refreshHealth, LIVE_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [autoRefresh, refreshHealth]);
 

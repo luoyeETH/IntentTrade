@@ -163,26 +163,13 @@ def test_explicit_already_entered_overrides_planned_model_output() -> None:
     assert analysis.entry_mode == EntryMode.MARKET
 
 
-@pytest.mark.parametrize(("image_count", "expected_calls"), [(1, 3), (2, 4)])
-def test_multimodal_analyzes_original_images_independently_then_merges(
+@pytest.mark.parametrize("image_count", [1, 2])
+def test_multimodal_uses_text_gate_before_strict_image_extraction(
     monkeypatch: pytest.MonkeyPatch,
     image_count: int,
-    expected_calls: int,
 ) -> None:
     calls: list[tuple[str, object]] = []
 
-    text_result = {
-        "mentions": ["闪迪"],
-        "canonical_symbols": ["SNDK"],
-        "direction": "unknown",
-        "action": "watch",
-        "position_state": "unknown",
-        "entry_mode": "unknown",
-        "signal_type": "descriptive",
-        "confidence": 0.6,
-        "summary": "正文提到闪迪，等待图片给出计划",
-        "evidence": {"symbol": "text: 闪迪"},
-    }
     final_result = {
         "mentions": ["闪迪"],
         "canonical_symbols": ["SNDK"],
@@ -199,28 +186,51 @@ def test_multimodal_analyzes_original_images_independently_then_merges(
         "evidence": {"entry": "image_1: 图中入场线 1300"},
     }
 
-    def fake_chat_json(system, user, **kwargs):
-        calls.append(("text" if system == intent_module.SYSTEM_PROMPT else "merge", user))
-        if system == intent_module.MERGE_SYSTEM_PROMPT:
-            assert '"image_analyses"' in user
-            return final_result
-        assert "legacy OCR text" not in user
-        return text_result
-
     def fake_chat_json_content(system, content, **kwargs):
-        calls.append(("image", content))
-        assert system == intent_module.IMAGE_SYSTEM_PROMPT
-        image_block = content[0]
-        assert image_block["type"] == "image"
-        assert image_block["source"] == {
-            "type": "base64",
-            "media_type": "image/jpeg",
-            "data": "encoded-image",
-        }
+        calls.append(("multimodal", content))
+        assert system == intent_module.MULTIMODAL_SYSTEM_PROMPT
+        image_blocks = [block for block in content if block["type"] == "image"]
+        assert len(image_blocks) == image_count
+        assert all(
+            block["source"]
+            == {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": "encoded-image",
+            }
+            for block in image_blocks
+        )
+        prompt = "\n".join(
+            block["text"] for block in content if block["type"] == "text"
+        )
+        assert "闪迪看这张图" in prompt
+        assert "legacy OCR text" not in prompt
+        assert '"post_id": "older-note"' in prompt
         return {
             **final_result,
-            "summary": "图片独立交易计划",
+            "summary": "正文与图片一次完成交易计划",
             "evidence": {"entry": "图中入场线 1300"},
+            "memory_relation": "uncertain",
+            "memory_confidence": 0.2,
+            "supersede_signal_ids": [],
+        }
+
+    def fake_chat_json(system, user, **kwargs):
+        calls.append(("text_gate", user))
+        assert system == intent_module.CLASSIFIER_SYSTEM_PROMPT
+        assert "闪迪看这张图" in user
+        assert "legacy OCR text" not in user
+        assert "older-note" not in user
+        assert "encoded-image" not in user
+        return {
+            "category": "technical_analysis",
+            "is_trade_relevant": True,
+            "confidence": 0.96,
+            "mentioned_instruments": ["闪迪"],
+            "text_evidence": ["闪迪看这张图"],
+            "image_analysis_warranted": True,
+            "summary": "对闪迪图表的具体分析",
+            "reasoning": "文字指向可识别标的的图表分析",
         }
 
     monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
@@ -262,15 +272,98 @@ def test_multimodal_analyzes_original_images_independently_then_merges(
         ],
     )
 
-    assert len(calls) == expected_calls
-    assert [kind for kind, _ in calls].count("text") == 1
-    assert [kind for kind, _ in calls].count("image") == image_count
-    assert [kind for kind, _ in calls].count("merge") == 1
-    assert analysis.analyzer == "llm_multimodal"
+    assert [name for name, _ in calls] == ["text_gate", "multimodal"]
+    assert analysis.analyzer == "llm_trade_multimodal"
     assert analysis.analysis_text == post.text
     assert analysis.entry_price == 1300
-    assert len(analysis.extracted_fields["image_analyses"]) == image_count
+    assert analysis.extracted_fields["image_count"] == image_count
+    assert analysis.extracted_fields["workflow"] == "text_gate_then_strict_extraction"
+    assert analysis.extracted_fields["classification"]["passed_gate"] is True
     assert analysis.extracted_fields["memory"]["relation"] == "uncertain"
+
+
+def test_non_trade_text_gate_skips_image_and_strict_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_chat_json(system, user, **kwargs):
+        calls.append(system)
+        assert system == intent_module.CLASSIFIER_SYSTEM_PROMPT
+        return {
+            "category": "argument",
+            "is_trade_relevant": False,
+            "confidence": 0.97,
+            "mentioned_instruments": ["BTC"],
+            "text_evidence": ["你们去年就在吹 BTC"],
+            "image_analysis_warranted": False,
+            "summary": "围绕 BTC 的对喷，没有当前交易观点或操作",
+            "reasoning": "金融名词和年份不构成具体交易分析",
+        }
+
+    monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
+    monkeypatch.setattr(intent_module, "chat_json", fake_chat_json)
+    monkeypatch.setattr(
+        intent_module,
+        "chat_json_content",
+        lambda *args, **kwargs: pytest.fail("strict extraction must be skipped"),
+    )
+    monkeypatch.setattr(
+        intent_module,
+        "image_source_from_url",
+        lambda *args, **kwargs: pytest.fail("rejected posts must not download images"),
+    )
+
+    analyzer = IntentAnalyzer(
+        TickerMap(ROOT / "config" / "ticker_aliases.yaml"),
+        AnalysisConfig(mode="llm"),
+    )
+    analysis = analyzer.analyze(
+        SocialPost(
+            id="argument-with-image",
+            author_username="kol",
+            text="你们去年就在吹 BTC，现在又来了",
+            created_at=_now(),
+            media_urls=["https://img.test/argument.jpg"],
+        )
+    )
+
+    assert calls == [intent_module.CLASSIFIER_SYSTEM_PROMPT]
+    assert analysis.analyzer == "llm_text_gate"
+    assert analysis.signal_type == SignalType.DESCRIPTIVE
+    assert analysis.canonical_symbols == []
+    assert analysis.direction == Direction.UNKNOWN
+    assert analysis.action == IntentAction.UNKNOWN
+    assert analysis.entry_price is None
+    assert analysis.stop_loss is None
+    assert analysis.take_profit is None
+    assert analysis.extracted_fields["workflow"] == "text_gate_only"
+    assert analysis.extracted_fields["classification"]["category"] == "argument"
+
+
+def test_text_gate_failure_never_uses_rule_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
+    monkeypatch.setattr(
+        intent_module,
+        "chat_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("gate timeout")),
+    )
+    analyzer = IntentAnalyzer(
+        TickerMap(ROOT / "config" / "ticker_aliases.yaml"),
+        AnalysisConfig(mode="llm"),
+    )
+
+    with pytest.raises(RuntimeError, match="AI analysis workflow failed"):
+        analyzer.analyze(
+            SocialPost(
+                id="gate-timeout",
+                author_username="kol",
+                text="BTC 61000 做多",
+                created_at=_now(),
+            )
+        )
 
 
 def test_memory_review_supersedes_old_pending_plan_after_entry_confirmation(
@@ -334,26 +427,41 @@ def test_memory_review_supersedes_old_pending_plan_after_entry_confirmation(
 
     def fake_chat_json(system, user, **kwargs):
         calls.append(system)
-        if system == intent_module.MEMORY_SYSTEM_PROMPT:
-            assert '"entry_price_low": 1290' in user
-            assert '"state": "waiting_entry"' in user
+        if system == intent_module.CLASSIFIER_SYSTEM_PROMPT:
+            assert "1345 闪迪我上车了" in user
+            assert "old-signal" not in user
             return {
-                **current_result,
-                "memory_relation": "confirms_entry",
-                "memory_confidence": 0.96,
-                "related_symbol": "SNDK",
-                "supersede_signal_ids": [old_signal.id],
-                "memory_summary": "1345 已上车，取代 1290-1300 的旧等待计划",
-                "reasoning": "当前推文确认已经入场，旧限价计划不应继续等待",
+                "category": "position_update",
+                "is_trade_relevant": True,
+                "confidence": 0.98,
+                "mentioned_instruments": ["闪迪"],
+                "text_evidence": ["1345 闪迪我上车了"],
+                "image_analysis_warranted": False,
+                "summary": "闪迪已成交的持仓更新",
+                "reasoning": "包含标的、成本和已入场动作",
             }
-        return current_result
+        assert system == intent_module.SYSTEM_PROMPT
+        assert '"entry_price_low": 1290' in user
+        assert '"state": "waiting_entry"' in user
+        return {
+            **current_result,
+            "memory_relation": "confirms_entry",
+            "memory_confidence": 0.96,
+            "related_symbol": "SNDK",
+            "supersede_signal_ids": [old_signal.id],
+            "memory_summary": "1345 已上车，取代 1290-1300 的旧等待计划",
+            "reasoning": "当前推文确认已经入场，旧限价计划不应继续等待",
+        }
 
     monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
     monkeypatch.setattr(intent_module, "chat_json", fake_chat_json)
 
     analysis = pipe.analyze_post(current_post)
 
-    assert calls == [intent_module.SYSTEM_PROMPT, intent_module.MEMORY_SYSTEM_PROMPT]
+    assert calls == [
+        intent_module.CLASSIFIER_SYSTEM_PROMPT,
+        intent_module.SYSTEM_PROMPT,
+    ]
     assert analysis.position_state == PositionState.ENTERED
     assert analysis.entry_price == 1345
     assert analysis.extracted_fields["memory"]["relation"] == "confirms_entry"
@@ -490,6 +598,56 @@ def test_batch_persists_oldest_post_before_reviewing_the_next(
     assert len(notes) == 1
 
 
+def test_failed_ai_post_stays_pending_and_can_be_retried(tmp_path: Path) -> None:
+    pipe = Pipeline(
+        Settings(
+            app=AppConfig(db_path=str(tmp_path / "retry.db")),
+            twitter=TwitterConfig(source="mock", auto_poll=False),
+        )
+    )
+    post = SocialPost(
+        id="retry-after-gate-error",
+        author_username="kol",
+        text="BTC 61000 突破后做多",
+        created_at=_now(),
+    )
+    pipe.storage.insert_post(post)
+
+    class FailingAnalyzer:
+        def analyze(self, post, *, history=None):
+            raise TimeoutError("classifier unavailable")
+
+    pipe.analyzer = FailingAnalyzer()
+    with pytest.raises(RuntimeError, match="pending analysis attempt"):
+        pipe.analyze_new_posts(max_analyze=1)
+    assert [item.id for item in pipe.pending_posts()] == [post.id]
+
+    class RecoveredAnalyzer:
+        def analyze(self, post, *, history=None):
+            return IntentAnalysis(
+                post_id=post.id,
+                kol_username=post.author_username,
+                raw_text=post.text,
+                analysis_text=post.text,
+                canonical_symbols=["BTC-USD"],
+                direction=Direction.LONG,
+                action=IntentAction.OPEN,
+                position_state=PositionState.PLANNED,
+                entry_mode=EntryMode.STOP,
+                signal_type=SignalType.STRUCTURED,
+                trigger_price=61000,
+                confidence=0.95,
+                summary="BTC 突破 61000 后做多",
+                analyzer="llm",
+            )
+
+    pipe.analyzer = RecoveredAnalyzer()
+    analyses, signals, _ = pipe.analyze_new_posts(max_analyze=1)
+    assert [item.post_id for item in analyses] == [post.id]
+    assert [item.post_id for item in signals] == [post.id]
+    assert pipe.pending_posts() == []
+
+
 def test_limit_long_waits_above_requested_price() -> None:
     signal = _signal()
     waiting = evaluate_signal(
@@ -539,6 +697,20 @@ def test_short_limit_and_stop_have_opposite_triggers() -> None:
         MarketSnapshot(symbol="SNDK", price=1310, source="test", is_live=True),
         require_live=True,
     ).state == SignalState.READY
+
+    trigger_only_stop = _signal(
+        entry_mode=EntryMode.STOP,
+        entry_price=None,
+        trigger_price=1300,
+    )
+    trigger_ready = evaluate_signal(
+        trigger_only_stop,
+        MarketSnapshot(symbol="SNDK", price=1310, source="test", is_live=True),
+        require_live=True,
+    )
+    assert trigger_ready.state == SignalState.READY
+    assert trigger_ready.can_execute is True
+    assert "1300" in trigger_ready.reason
 
 
 def test_range_entry_and_expiry_are_explicit() -> None:

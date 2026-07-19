@@ -123,7 +123,11 @@ def evaluate_signal(
     if mode == EntryMode.UNKNOWN:
         mode = EntryMode.LIMIT if signal.entry_price is not None else EntryMode.MARKET
 
-    target = signal.entry_price
+    target = (
+        signal.trigger_price
+        if mode == EntryMode.STOP and signal.trigger_price is not None
+        else signal.entry_price
+    )
     low = signal.entry_price_low
     high = signal.entry_price_high
     if mode == EntryMode.RANGE:

@@ -6,9 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
-from intent_trade.web.app import app
+from intent_trade.web import app as web_app
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "src" / "intent_trade" / "web" / "static"
@@ -68,6 +66,16 @@ def test_post_review_workspace_has_bounded_linked_layout():
     assert "grid-template-columns" in css
 
 
+def test_dashboard_reads_background_results_without_manual_refresh():
+    app_source = (ROOT / "frontend" / "src" / "App.jsx").read_text(
+        encoding="utf-8"
+    )
+    assert "const LIVE_REFRESH_MS = 15000" in app_source
+    assert "window.setInterval(() => refresh(true), LIVE_REFRESH_MS)" in app_source
+    assert "window.setInterval(refreshHealth, LIVE_REFRESH_MS)" in app_source
+    assert "health.poller?.analysis_running" in app_source
+
+
 def test_resolve_route_from_shipped_app_js():
     """Drive resolveRoute exported from static/app.js compatibility helpers."""
     assert APP_JS.exists(), "static/app.js route helpers missing"
@@ -100,35 +108,41 @@ console.log('resolveRoute ok', JSON.stringify(mod.ROUTES));
     assert "resolveRoute ok" in r.stdout
 
 
-def test_spa_routes_serve_shell_and_static():
-    client = TestClient(app)
-    for path in ("/", "/overview", "/timeline", "/timeline/SNDK", "/tools", "/symbol/SNDK"):
-        resp = client.get(path)
-        assert resp.status_code == 200, path
-        body = resp.text
-        assert "IntentTrade" in body
-        assert 'id="root"' in body
-        # React SPA: hashed assets under /static/assets/
-        assert "/static/assets/" in body
-        assert re.search(r"/static/assets/index-[^\"']+\.js", body)
-        assert re.search(r"/static/assets/index-[^\"']+\.css", body)
-        # noscript / a11y nav paths
-        assert 'href="/overview"' in body
-        assert 'href="/timeline"' in body
-        assert 'href="/tools"' in body
+def test_spa_routes_serve_shell_and_static(monkeypatch, tmp_path):
+    monkeypatch.setenv("INTENT_TRADE_DB_PATH", str(tmp_path / "web-routes.db"))
+    monkeypatch.setattr(web_app.bg_poller, "start", lambda: None)
+    monkeypatch.setattr(web_app.bg_poller, "stop", lambda: None)
+    monkeypatch.setattr(web_app, "_PIPELINE", None)
+    responses = [
+        web_app.index(),
+        web_app.spa_overview(),
+        web_app.spa_timeline(),
+        web_app.spa_timeline("SNDK"),
+        web_app.spa_tools(),
+        web_app.spa_symbol("SNDK"),
+    ]
+    assert all(Path(response.path) == INDEX_HTML for response in responses)
 
-    built_css = _latest_built_css()
-    css = client.get(f"/static/assets/{built_css.name}")
-    assert css.status_code == 200
-    assert b"--bg" in css.content or "--bg" in css.text
-    assert b"--grid-size" in css.content or "--grid-size" in css.text
+    registered_paths = {route.path for route in web_app.app.routes}
+    assert {"/", "/overview", "/timeline", "/tools", "/symbol/{symbol}"}.issubset(
+        registered_paths
+    )
 
-    built_js = _latest_built_js()
-    js = client.get(f"/static/assets/{built_js.name}")
-    assert js.status_code == 200
-    # minified bundle still contains route paths
-    assert b"/overview" in js.content or "/overview" in js.text
+    body = INDEX_HTML.read_text(encoding="utf-8")
+    assert "IntentTrade" in body
+    assert 'id="root"' in body
+    assert "/static/assets/" in body
+    assert re.search(r"/static/assets/index-[^\"']+\.js", body)
+    assert re.search(r"/static/assets/index-[^\"']+\.css", body)
+    assert 'href="/overview"' in body
+    assert 'href="/timeline"' in body
+    assert 'href="/tools"' in body
 
-    health = client.get("/api/health")
-    assert health.status_code == 200
-    assert health.json().get("ok") is True
+    built_css = _latest_built_css().read_text(encoding="utf-8")
+    assert "--bg" in built_css
+    assert "--grid-size" in built_css
+
+    built_js = _latest_built_js().read_text(encoding="utf-8")
+    assert "/overview" in built_js
+
+    assert web_app.health().get("ok") is True

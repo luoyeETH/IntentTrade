@@ -37,7 +37,12 @@ console = Console()
 
 
 class Pipeline:
-    def __init__(self, settings: Optional[Settings] = None) -> None:
+    def __init__(
+        self,
+        settings: Optional[Settings] = None,
+        *,
+        agent_tools_enabled: Optional[bool] = None,
+    ) -> None:
         self.settings = settings or load_settings()
         self.storage = Storage(self.settings.db_path)
         self.ticker_map = TickerMap(self.settings.ticker_aliases_path)
@@ -52,10 +57,15 @@ class Pipeline:
             yf_symbol_map=self.ticker_map.yfinance_map(),
             asset_class_map=self.ticker_map.asset_class_map(),
         )
+        use_agent_tools = (
+            self.settings.analysis.agent_tools_enabled
+            if agent_tools_enabled is None
+            else bool(agent_tools_enabled)
+        )
         self.analyzer = IntentAnalyzer(
             self.ticker_map,
             self.settings.analysis,
-            market=self.market,
+            market=self.market if use_agent_tools else None,
         )
         self.broker = PaperBroker(
             self.storage,
@@ -125,15 +135,24 @@ class Pipeline:
             self.feed_error = str(exc)
             console.print(f"[red]feed unavailable: {self.feed_error}[/red]")
             return []
+        self.feed_error = ""
         new = []
         for p in posts:
-            if not self.storage.post_exists(p.id):
-                self.storage.upsert_post(p)
+            if self.storage.insert_post(p):
                 new.append(p)
-            else:
-                # Refresh text/media metadata for posts already seen.
-                self.storage.upsert_post(p)
         return new
+
+    def pending_posts(self, limit: int = 500) -> list[SocialPost]:
+        """Return posts without a persisted signal or descriptive note."""
+
+        existing_posts = self.storage.list_posts(limit=limit)
+        done_post_ids = {s.post_id for s in self.storage.list_signals()}
+        done_post_ids.update(
+            n.post_id for n in self.storage.list_notes(limit=max(1000, limit))
+        )
+        pending = [p for p in existing_posts if p.id not in done_post_ids]
+        pending.sort(key=lambda item: item.created_at)
+        return pending
 
     def analyze_new_posts(
         self,
@@ -142,25 +161,18 @@ class Pipeline:
         max_analyze: Optional[int] = None,
     ) -> tuple[list[IntentAnalysis], list[TradingSignal], list[InstrumentNote]]:
         """Analyze and persist posts oldest-first so later posts see new history."""
-        existing_posts = self.storage.list_posts(limit=500)
-        done_post_ids = set()
-        for s in self.storage.list_signals():
-            done_post_ids.add(s.post_id)
-        for n in self.storage.list_notes(limit=1000):
-            done_post_ids.add(n.post_id)
-
-        pending = [p for p in existing_posts if p.id not in done_post_ids]
-        pending.sort(key=lambda item: item.created_at)
+        pending = self.pending_posts()
         if max_analyze is not None:
             pending = pending[: max(0, max_analyze)]
         console.print(
             f"[dim]LLM analyze pending={len(pending)} "
-            f"(skip already recorded; original images are analyzed automatically)[/dim]"
+            f"(text gate first; images only for trade-relevant posts)[/dim]"
         )
 
         results: list[IntentAnalysis] = []
         signals: list[TradingSignal] = []
         notes: list[InstrumentNote] = []
+        failures: list[tuple[str, str]] = []
         for i, post in enumerate(pending, 1):
             console.print(
                 f"[cyan][{i}/{len(pending)}][/cyan] @{post.author_username} "
@@ -170,6 +182,7 @@ class Pipeline:
                 analysis = self.analyze_post(post)
             except Exception as e:
                 console.print(f"[red]analyze failed {post.id}: {e}[/red]")
+                failures.append((post.id, str(e)))
                 continue
             self.storage.save_analysis(
                 post.id, post.author_username, analysis.model_dump(mode="json")
@@ -186,6 +199,12 @@ class Pipeline:
                 f"conf={analysis.confidence}"
             )
             results.append(analysis)
+        if failures and not results:
+            post_id, error = failures[0]
+            raise RuntimeError(
+                f"{len(failures)} pending analysis attempt(s) failed; "
+                f"first={post_id}: {error}"
+            )
         return results, signals, notes
 
     def analyze_post(self, post: SocialPost) -> IntentAnalysis:

@@ -17,15 +17,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class TwitterConfig(BaseModel):
     source: str = "mock"
-    poll_interval_seconds: int = 300
+    poll_interval_seconds: int = 60
     poll_jitter_seconds: int = 0
     max_posts_per_kol: int = 50
     include_media: bool = True
     bird_timeout_seconds: int = 60
-    # When True, `intent-trade serve` runs a background fetch→analyze→settle loop
-    # so tweets keep updating without a browser open or manual 拉帖.
+    # When True, `intent-trade serve` runs independent background fetch and
+    # analysis workers, without requiring a browser or manual 拉帖.
     auto_poll: bool = True
-    auto_poll_max_analyze: int = 10
+    auto_poll_max_analyze: int = 1
+    # Disable open-ended market tool loops on the bounded two-stage background
+    # path. Interactive tools can still use agent calls when this is false.
+    auto_poll_agent_tools: bool = False
 
 
 class MarketConfig(BaseModel):
@@ -54,6 +57,8 @@ class MarketConfig(BaseModel):
 class AnalysisConfig(BaseModel):
     mode: str = "llm"
     llm_model: str = "grok-4.5"
+    classifier_model: str = ""
+    classifier_min_confidence: float = 0.7
     confidence_threshold: float = 0.55
     structured_min_confidence: float = 0.7
     pending_signal_ttl_hours: float = 72.0

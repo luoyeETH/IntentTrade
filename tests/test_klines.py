@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 from intent_trade.market.klines import (
     SUPPORTED_INTERVALS,
@@ -17,7 +17,6 @@ from intent_trade.market.klines import (
     normalize_interval,
 )
 from intent_trade.models.domain import MarketBar
-from intent_trade.web.app import app
 
 
 def test_normalize_interval_aliases():
@@ -218,6 +217,8 @@ def test_get_klines_equity_prefers_bstock_then_yfinance():
 def test_api_klines_mocked(monkeypatch):
     """Hit FastAPI route with a stubbed Pipeline.market.get_klines."""
 
+    from intent_trade.web import app as web_app
+
     bars = [
         MarketBar(
             symbol="BTC-USD",
@@ -281,11 +282,14 @@ def test_api_klines_mocked(monkeypatch):
         market = FakeMarket()
         storage = FakeStorage()
 
-    monkeypatch.setattr("intent_trade.web.app._pipe", lambda: FakePipe())
-    client = TestClient(app)
-    r = client.get("/api/klines/BTC-USD?interval=1d&limit=50")
-    assert r.status_code == 200
-    body = r.json()
+    monkeypatch.setattr(web_app, "_pipe", lambda: FakePipe())
+    body = web_app.klines_view(
+        "BTC-USD",
+        interval="1d",
+        limit=50,
+        markers=True,
+        include_quote=True,
+    )
     assert body["symbol"] == "BTC-USD"
     assert body["source"] == "binance"
     assert body["interval"] == "1d"
@@ -296,6 +300,8 @@ def test_api_klines_mocked(monkeypatch):
 
 
 def test_api_klines_bad_interval(monkeypatch):
+    from intent_trade.web import app as web_app
+
     class FakePipe:
         class ticker_map:
             @staticmethod
@@ -313,10 +319,16 @@ def test_api_klines_bad_interval(monkeypatch):
         market = MagicMock()
         storage = MagicMock()
 
-    monkeypatch.setattr("intent_trade.web.app._pipe", lambda: FakePipe())
-    client = TestClient(app)
-    r = client.get("/api/klines/BTC-USD?interval=3m")
-    assert r.status_code == 400
+    monkeypatch.setattr(web_app, "_pipe", lambda: FakePipe())
+    with pytest.raises(HTTPException) as exc_info:
+        web_app.klines_view(
+            "BTC-USD",
+            interval="3m",
+            limit=300,
+            markers=True,
+            include_quote=True,
+        )
+    assert exc_info.value.status_code == 400
 
 
 def test_api_klines_can_skip_duplicate_quote(monkeypatch):

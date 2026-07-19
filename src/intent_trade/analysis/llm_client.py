@@ -81,6 +81,7 @@ def chat_json(
     model: Optional[str] = None,
     max_tokens: int = 1200,
     timeout: Optional[float] = None,
+    max_retries: Optional[int] = None,
 ) -> dict[str, Any]:
     """Call chat model and parse a JSON object from the response."""
     return chat_json_content(
@@ -89,6 +90,7 @@ def chat_json(
         model=model,
         max_tokens=max_tokens,
         timeout=timeout,
+        max_retries=max_retries,
     )
 
 
@@ -99,6 +101,7 @@ def chat_json_content(
     model: Optional[str] = None,
     max_tokens: int = 1200,
     timeout: Optional[float] = None,
+    max_retries: Optional[int] = None,
 ) -> dict[str, Any]:
     """Call the model with text or native multimodal content and parse JSON."""
     api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("INTENT_TRADE_LLM_KEY")
@@ -110,8 +113,17 @@ def chat_json_content(
     timeout = timeout if timeout is not None else float(
         os.getenv("INTENT_TRADE_LLM_TIMEOUT", "60")
     )
+    max_retries = (
+        max_retries
+        if max_retries is not None
+        else int(os.getenv("INTENT_TRADE_LLM_MAX_RETRIES", "0"))
+    )
     # anthropic SDK reads ANTHROPIC_BASE_URL from env if present
-    client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=max(0, max_retries),
+    )
     msg = client.messages.create(
         model=model or default_model(),
         max_tokens=max_tokens,
@@ -135,6 +147,7 @@ def chat_json_agent(
     max_tokens: int = 1600,
     max_rounds: int = 6,
     timeout: Optional[float] = None,
+    max_retries: Optional[int] = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run an Anthropic-compatible tool loop and parse the final JSON object."""
 
@@ -146,7 +159,16 @@ def chat_json_agent(
     timeout = timeout if timeout is not None else float(
         os.getenv("INTENT_TRADE_LLM_TIMEOUT", "60")
     )
-    client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+    max_retries = (
+        max_retries
+        if max_retries is not None
+        else int(os.getenv("INTENT_TRADE_LLM_MAX_RETRIES", "0"))
+    )
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=max(0, max_retries),
+    )
     messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
     trace: list[dict[str, Any]] = []
 

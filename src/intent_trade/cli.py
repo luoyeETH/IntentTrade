@@ -159,7 +159,7 @@ def fetch_kol(
 
     for p in posts:
         if save:
-            pipe.storage.upsert_post(p)
+            pipe.storage.insert_post(p)
         console.rule(f"@{p.author_username} · {p.created_at} · {p.id}")
         console.print(p.text)
         if p.media_urls:

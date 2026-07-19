@@ -56,8 +56,9 @@ Required Notice: Copyright IntentTrade contributors
 | 模块 | 状态 |
 |------|------|
 | KOL 拉取（mock / bird / RapidAPI / twitterapi.io / X API） | 可用 |
-| LLM 意图解析 + 规则兜底 | 可用 |
-| 原图直传识别（正文独立、逐图独立、最终汇总） | 可用 |
+| 推文历史归档（首次快照只增不改，源端删除后仍保留） | 可用 |
+| LLM 文本门控 + 严格交易字段提取 | 可用 |
+| 按需原图识别（仅交易相关推文，重点 K 线/价格标注） | 可用 |
 | 标的级历史回看（计划调整、成交确认、撤销与旧单取代） | 可用 |
 | Agent 工具调用（标的搜索/注册、现价、近期高低点与回撤） | 可用 |
 | 结构化信号 vs 描述笔记 / 非交易推文（N/A） | 可用 |
@@ -115,9 +116,9 @@ Twitter 源（`config/settings.yaml` → `twitter.source`）：
 - `bird` — 复用本地 X Web 会话 Cookie 的低频读取；需安装 `@jtsang/bird@0.8.1`，并配置 `TWITTER_AUTH_TOKEN` / `TWITTER_CT0`
 - `rapidapi` / `twitterapi_io` / `x_api` — 需在 `.env` 配置对应 key  
 
-LLM：兼容 Anthropic API 的 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `INTENT_TRADE_LLM_MODEL`。含图片的帖子会自动执行正文识别、逐张原图视觉识别和最终汇总；原图由服务端下载后以 base64 发送，避免兼容网关丢弃远程 URL 图片块。单图共 3 次调用，多图为 N+2 次。可用 `INTENT_TRADE_VISION_MODEL` 单独指定视觉模型。
+LLM：兼容 Anthropic API 的 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `INTENT_TRADE_LLM_MODEL`。自动后台先用纯文本 AI 将推文分为交易操作、点位/技术分析、持仓更新、市场观点或非交易内容。只有分类通过置信度门槛才进入第二阶段，严格提取标的、方向、操作和点位；有原图时才在该阶段下载并分析 K 线/价格标注。分类或提取调用失败会保留待处理状态自动重试，不会用关键词规则伪造交易信号。可用 `INTENT_TRADE_CLASSIFIER_MODEL` 单独指定门控模型，`INTENT_TRADE_VISION_MODEL` 指定视觉模型，`INTENT_TRADE_LLM_MAX_RETRIES` 控制 SDK 重试次数。
 
-历史回看默认检索同一 KOL 最近 7 天、最多 6 条、最多 3 个标的的强相关信号与笔记。后续推文明示改价、已成交、撤销、退出或反向时，旧未成交计划会标记为 `superseded`；已模拟成交记录不会被回滚。图片帖把回看合并进最终汇总调用，因此仍保持单图 3 次调用。
+历史回看默认检索同一 KOL 最近 7 天、最多 6 条、最多 3 个标的的强相关信号与笔记，并在通过门控后的严格提取阶段与当前正文/图片一起处理。后续推文明示改价、已成交、撤销、退出或反向时，旧未成交计划会标记为 `superseded`；已模拟成交记录不会被回滚。
 
 Agent 遇到明确但未知的资产时会搜索并验证 provider symbol，再写入本地 `config/ticker_aliases.learned.yaml`。加密资产使用 `BTC-USD` canonical 格式，美股/ADR 使用 `NVDA` 格式；查价顺序仍为 Binance crypto/bStock 优先，找不到时回退 yfinance。行情工具结果会随分析保存，模型不得把正股高点直接套用为存在溢价的 ADR 入场价。
 

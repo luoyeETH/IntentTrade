@@ -37,14 +37,16 @@ twitter:
   # mock | bird | rapidapi | twitterapi_io | x_api
   # bird: free, low-frequency reads through a local X browser session cookie
   source: bird
-  poll_interval_seconds: 900
-  poll_jitter_seconds: 120
+  poll_interval_seconds: 60
+  poll_jitter_seconds: 0
   max_posts_per_kol: 20
   include_media: true
   bird_timeout_seconds: 60
   # serve process keeps pulling while online (independent of browser)
   auto_poll: true
-  auto_poll_max_analyze: 10
+  auto_poll_max_analyze: 1
+  # Low-latency background analysis; interactive tools still keep agent tools.
+  auto_poll_agent_tools: false
 
 market:
   # yfinance symbols; aliases resolved via ticker map first
@@ -77,6 +79,10 @@ analysis:
   # llm (default, AI-driven) | hybrid | rule_based (emergency only)
   mode: llm
   llm_model: grok-4.5
+  # Text-only relevance gate runs before any strict extraction or image read.
+  # Empty uses llm_model; override with INTENT_TRADE_CLASSIFIER_MODEL if needed.
+  classifier_model: ""
+  classifier_min_confidence: 0.7
   confidence_threshold: 0.55
   # deterministic fields only written when confidence >= this
   structured_min_confidence: 0.7
