@@ -12,6 +12,12 @@
 
 ![IntentTrade 市场意图总览](docs/images/dashboard-overview.png)
 
+### 原帖与 AI 解析
+
+滚动查看原帖时，右侧同步展示对应的结构化信号、价格条件与关联模拟成交。
+
+![IntentTrade 原帖与 AI 解析](docs/images/post-analysis.png)
+
 ### 标的时间线
 
 把实时 K 线、做多/做空/成交/笔记标记与历史事件流放在同一时间轴上。
