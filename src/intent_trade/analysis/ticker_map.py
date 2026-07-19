@@ -53,6 +53,10 @@ class TickerMap:
                     im.aliases.append(a)
             if name and not im.name:
                 im.name = name
+            if asset_class and asset_class != "other":
+                im.asset_class = asset_class
+            if yfinance_symbol:
+                im.yfinance_symbol = yfinance_symbol
         else:
             self.by_symbol[symbol] = InstrumentMeta(
                 symbol=symbol,
@@ -87,16 +91,103 @@ class TickerMap:
         if not self.learned_path.exists():
             return
         raw = yaml.safe_load(self.learned_path.read_text(encoding="utf-8")) or {}
-        # format: { "大饼": {"symbol": "BTC-USD", "reason": "...", "at": "..."}, ...}
+        # Legacy aliases stay at the root. Verified dynamic instruments live
+        # under the reserved __instruments__ key.
         if not isinstance(raw, dict):
             return
+        instruments = raw.get("__instruments__") or {}
+        if isinstance(instruments, dict):
+            for symbol, meta in instruments.items():
+                if not isinstance(meta, dict):
+                    continue
+                self._register(
+                    str(symbol),
+                    [str(value) for value in (meta.get("aliases") or [])],
+                    name=str(meta.get("name") or symbol),
+                    asset_class=str(meta.get("asset_class") or "other"),
+                    yfinance_symbol=(
+                        str(meta["yfinance_symbol"])
+                        if meta.get("yfinance_symbol")
+                        else None
+                    ),
+                )
         for alias, meta in raw.items():
+            if alias == "__instruments__":
+                continue
             if isinstance(meta, dict):
                 symbol = str(meta.get("symbol") or "")
             else:
                 symbol = str(meta)
             if alias and symbol:
                 self._register(symbol, [str(alias)])
+
+    @staticmethod
+    def canonicalize_symbol(symbol: str, asset_class: str) -> str:
+        """Normalize verified provider symbols to the application's format."""
+
+        value = str(symbol or "").strip().upper().replace(" ", "")
+        kind = str(asset_class or "other").strip().lower()
+        if kind == "crypto":
+            if value.endswith("USDT") and "-" not in value:
+                value = f"{value[:-4]}-USD"
+            elif value.endswith("-USDT"):
+                value = f"{value[:-5]}-USD"
+            elif not value.endswith("-USD"):
+                value = f"{value}-USD"
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^=]{0,31}", value):
+            raise ValueError(f"invalid canonical symbol: {value!r}")
+        return value
+
+    def register_instrument(
+        self,
+        symbol: str,
+        *,
+        name: str,
+        asset_class: str,
+        aliases: list[str],
+        yfinance_symbol: Optional[str] = None,
+        reason: str = "agent_verified",
+        persist: bool = True,
+    ) -> InstrumentMeta:
+        """Register a provider-verified instrument and its aliases."""
+
+        kind = str(asset_class or "other").strip().lower()
+        if kind not in {"crypto", "equity", "etf", "other"}:
+            raise ValueError(f"unsupported asset class: {kind}")
+        canonical = self.canonicalize_symbol(symbol, kind)
+        yf_symbol = str(yfinance_symbol or symbol).strip().upper() or canonical
+        clean_aliases = [str(value).strip() for value in aliases if str(value).strip()]
+        self._register(
+            canonical,
+            clean_aliases,
+            name=str(name or canonical).strip(),
+            asset_class=kind,
+            yfinance_symbol=yf_symbol,
+        )
+        merged_aliases = list(self.by_symbol[canonical].aliases)
+        if persist:
+            data: dict = {}
+            if self.learned_path.exists():
+                data = yaml.safe_load(self.learned_path.read_text(encoding="utf-8")) or {}
+                if not isinstance(data, dict):
+                    data = {}
+            instruments = data.setdefault("__instruments__", {})
+            instruments[canonical] = {
+                "name": str(name or canonical).strip(),
+                "asset_class": kind,
+                "aliases": merged_aliases,
+                "yfinance_symbol": yf_symbol,
+                "reason": reason,
+                "at": datetime.utcnow().isoformat(timespec="seconds"),
+            }
+            self.learned_path.parent.mkdir(parents=True, exist_ok=True)
+            self.learned_path.write_text(
+                yaml.safe_dump(data, allow_unicode=True, sort_keys=True),
+                encoding="utf-8",
+            )
+            for alias in merged_aliases:
+                self._persist_learned(alias, canonical, reason=reason)
+        return self.by_symbol[canonical]
 
     def learn_alias(
         self,
@@ -195,4 +286,3 @@ class TickerMap:
                     found.append(symbol)
                     seen.add(symbol)
         return found
-

@@ -61,6 +61,19 @@ class MarketDataService:
     def asset_class_of(self, symbol: str) -> str:
         return self.asset_class_map.get(symbol, "other")
 
+    def register_instrument(
+        self,
+        symbol: str,
+        *,
+        asset_class: str,
+        yfinance_symbol: str,
+    ) -> None:
+        """Make a newly learned instrument immediately available to providers."""
+
+        self.asset_class_map[symbol] = asset_class
+        self.yf_symbol_map[symbol] = yfinance_symbol
+        self._quotes.pop(symbol, None)
+
     def get_klines(
         self,
         symbol: str,

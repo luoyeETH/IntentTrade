@@ -39,6 +39,7 @@ Required Notice: Copyright IntentTrade contributors
 | LLM 意图解析 + 规则兜底 | 可用 |
 | 原图直传识别（正文独立、逐图独立、最终汇总） | 可用 |
 | 标的级历史回看（计划调整、成交确认、撤销与旧单取代） | 可用 |
+| Agent 工具调用（标的搜索/注册、现价、近期高低点与回撤） | 可用 |
 | 结构化信号 vs 描述笔记 / 非交易推文（N/A） | 可用 |
 | 价格条件 paper 成交 + SL/TP 结算 | 可用 |
 | KOL 胜率统计 | 可用 |
@@ -96,6 +97,8 @@ Twitter 源（`config/settings.yaml` → `twitter.source`）：
 LLM：兼容 Anthropic API 的 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `INTENT_TRADE_LLM_MODEL`。含图片的帖子会自动执行正文识别、逐张原图视觉识别和最终汇总；单图共 3 次调用，多图为 N+2 次。可用 `INTENT_TRADE_VISION_MODEL` 单独指定视觉模型。
 
 历史回看默认检索同一 KOL 最近 7 天、最多 6 条、最多 3 个标的的强相关信号与笔记。后续推文明示改价、已成交、撤销、退出或反向时，旧未成交计划会标记为 `superseded`；已模拟成交记录不会被回滚。图片帖把回看合并进最终汇总调用，因此仍保持单图 3 次调用。
+
+Agent 遇到明确但未知的资产时会搜索并验证 provider symbol，再写入本地 `config/ticker_aliases.learned.yaml`。加密资产使用 `BTC-USD` canonical 格式，美股/ADR 使用 `NVDA` 格式；查价顺序仍为 Binance crypto/bStock 优先，找不到时回退 yfinance。行情工具结果会随分析保存，模型不得把正股高点直接套用为存在溢价的 ADR 入场价。
 
 可选代理（部分地区访问 Binance 主站受限时）：
 

@@ -52,7 +52,11 @@ class Pipeline:
             yf_symbol_map=self.ticker_map.yfinance_map(),
             asset_class_map=self.ticker_map.asset_class_map(),
         )
-        self.analyzer = IntentAnalyzer(self.ticker_map, self.settings.analysis)
+        self.analyzer = IntentAnalyzer(
+            self.ticker_map,
+            self.settings.analysis,
+            market=self.market,
+        )
         self.broker = PaperBroker(
             self.storage,
             self.market,

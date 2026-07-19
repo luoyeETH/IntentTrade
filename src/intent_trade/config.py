@@ -60,6 +60,9 @@ class AnalysisConfig(BaseModel):
     memory_lookback_hours: float = 168.0
     memory_max_items: int = 6
     memory_min_confidence: float = 0.75
+    agent_tools_enabled: bool = True
+    agent_max_rounds: int = 8
+    agent_price_lookback_days: int = 365
 
 
 class ExecutionConfig(BaseModel):

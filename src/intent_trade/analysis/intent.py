@@ -7,8 +7,10 @@ import os
 import re
 from typing import Any, Optional
 
+from intent_trade.analysis.agent_tools import IntentAgentTools
 from intent_trade.analysis.llm_client import (
     chat_json,
+    chat_json_agent,
     chat_json_content,
     default_model,
     llm_enabled,
@@ -44,16 +46,25 @@ SYSTEM_PROMPT = """你是专业的交易 KOL 意图结构化引擎。
    - market：现价/市价/立即执行；limit：到指定价或更优价；
    - stop：突破/跌破指定触发价；range：入场区间；unknown。
    有明确价格但没有“已经买入”语义时，按计划条件单处理，不要当成已成交。
-7) 价格字段全部由你从语义中抽取（不要编造）：
+7) 价格字段由原文语义抽取，或由原文明示的相对条件结合工具事实计算（不要编造）：
    - entry_price：开仓/上车/进场/成本/买入价
    - stop_loss：止损
    - take_profit / take_profit_levels：止盈、目标、看到、跌到（按方向理解）
    - trigger_price：条件减仓/平仓/突破/跌破触发价
+   - 若原文明确说“从近期高点回撤 50%-70% 时买”，应先查询近期高点，再把它换算为价格区间；evidence 必须注明工具高点和计算过程。
 8) signal_type：
    - structured：有标的 + 明确交易行为；开仓/加仓至少有一个明确价格或明确市价语义；
      平仓/减仓即使没有价格也可以是 structured，但不会被当前纸面执行器自动执行。
    - descriptive：情绪、长期观点、无清晰可执行行为。
 9) 数字要完整（61000 不要截成 610）；中文「7万」=70000，「1.5k」按上下文理解。
+10) Agent 工具：
+   - 明确提到一个真实资产但标的库没有时，必须先 search_instruments；找到可信结果后调用 register_instrument 入库，不能直接放弃映射。
+   - 帖子引用现价、近期高低点、从高点回撤百分比等外部事实时，调用 get_market_snapshot / get_price_statistics 核验。
+   - 工具查到的行情只作为背景事实，不得把“当前价/近期高点”误填成 entry/SL/TP，除非原文明确把它定义为交易价位。
+   - 已核验的当前价、高低点、回撤、数据源和时间应写进 summary/descriptive_note/reasoning，让用户能看到工具结论。
+   - 搜索已返回名称匹配且行情有效的候选后停止反复搜索同义词，完成必要注册并输出最终结果。
+11) 多市场标的：canonical_symbols[0] 必须是当前动作实际针对的主标的；公司正股、ADR、杠杆 ETF、代币化股票要分开。
+   正股的高点/回撤不能直接换算成存在溢价的 ADR 入场价。若原文条件基于正股、但实际只能买 ADR 且无法可靠换算，应记录为 descriptive/watch，而不是伪造 ADR 的绝对入场区间。
 
 禁止：
 - 凭空捏造价格、标的、方向
@@ -122,9 +133,23 @@ _NUMBER = r"([0-9]+(?:[,.][0-9]+)?\s*(?:万|[kK])?)"
 
 
 class IntentAnalyzer:
-    def __init__(self, ticker_map: TickerMap, config: AnalysisConfig) -> None:
+    def __init__(
+        self,
+        ticker_map: TickerMap,
+        config: AnalysisConfig,
+        market: Any = None,
+    ) -> None:
         self.ticker_map = ticker_map
         self.config = config
+        self.agent_tools = (
+            IntentAgentTools(
+                ticker_map,
+                market,
+                default_lookback_days=config.agent_price_lookback_days,
+            )
+            if market is not None and config.agent_tools_enabled
+            else None
+        )
 
     def analyze(
         self,
@@ -135,6 +160,8 @@ class IntentAnalyzer:
         mode = (self.config.mode or "llm").lower()
         if mode != "rule_based" and llm_enabled():
             try:
+                if self.agent_tools is not None:
+                    self.agent_tools.start_session()
                 if self._image_urls(post):
                     return self._analyze_multimodal(post, history=history)
                 current = self._analyze_llm(post)
@@ -228,11 +255,21 @@ KOL: @{post.author_username}
 - entry_price_low/high 只在原文明确给出价格区间时填写；单点价格不要复制成区间。
 - evidence 只引用或短述真实原文依据；无法确认的字段置信度给 0。
 """
-        data = (
-            data_override
-            if data_override is not None
-            else chat_json(SYSTEM_PROMPT, user, model=model, max_tokens=1400)
-        )
+        tool_trace: list[dict[str, Any]] = []
+        if data_override is not None:
+            data = data_override
+        elif self.agent_tools is not None:
+            data, tool_trace = chat_json_agent(
+                SYSTEM_PROMPT,
+                user,
+                tools=self.agent_tools.definitions(),
+                execute_tool=self.agent_tools.execute,
+                model=model,
+                max_tokens=1600,
+                max_rounds=self.config.agent_max_rounds,
+            )
+        else:
+            data = chat_json(SYSTEM_PROMPT, user, model=model, max_tokens=1400)
 
         # learn aliases into registry
         learned = data.get("alias_learning") or []
@@ -419,8 +456,9 @@ KOL: @{post.author_username}
                 "raw": data,
                 "alias_learning": learned,
                 "model": model,
+                "tool_calls": tool_trace,
             },
-            analyzer=analyzer,
+            analyzer=("llm_agent" if tool_trace and analyzer == "llm" else analyzer),
         )
 
     def _analyze_multimodal(
@@ -436,9 +474,13 @@ KOL: @{post.author_username}
         errors: list[dict[str, Any]] = []
 
         text_result: Optional[dict[str, Any]] = None
+        text_tool_calls: list[dict[str, Any]] = []
         try:
             text_analysis = self._analyze_llm(post)
             text_result = dict(text_analysis.extracted_fields.get("raw") or {})
+            text_tool_calls = list(
+                text_analysis.extracted_fields.get("tool_calls") or []
+            )
         except Exception as exc:
             errors.append({"stage": "text", "error": str(exc)[:240]})
 
@@ -562,6 +604,7 @@ memory_confidence（0-1）、related_symbol、supersede_signal_ids、memory_summ
                 "stage_errors": errors,
                 "model": model,
                 "vision_model": vision_model,
+                "tool_calls": text_tool_calls,
                 **({"memory": memory} if memory else {}),
             },
         )

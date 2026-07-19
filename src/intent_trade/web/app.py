@@ -158,6 +158,8 @@ def health() -> dict[str, Any]:
         "memory_enabled": s.analysis.memory_enabled,
         "memory_lookback_hours": s.analysis.memory_lookback_hours,
         "memory_max_items": s.analysis.memory_max_items,
+        "agent_tools_enabled": s.analysis.agent_tools_enabled,
+        "agent_max_rounds": s.analysis.agent_max_rounds,
         "timezone": s.app.timezone,
         "market_quote_ttl_seconds": s.market.quote_ttl_seconds,
         "market_require_live_for_execution": s.market.require_live_for_execution,

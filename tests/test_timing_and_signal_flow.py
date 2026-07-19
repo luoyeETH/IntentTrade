@@ -269,7 +269,11 @@ def test_memory_review_supersedes_old_pending_plan_after_entry_confirmation(
     settings = Settings(
         app=AppConfig(db_path=str(tmp_path / "memory.db")),
         twitter=TwitterConfig(source="mock", auto_poll=False),
-        analysis=AnalysisConfig(mode="llm", memory_enabled=True),
+        analysis=AnalysisConfig(
+            mode="llm",
+            memory_enabled=True,
+            agent_tools_enabled=False,
+        ),
     )
     pipe = Pipeline(settings)
     old_post = SocialPost(

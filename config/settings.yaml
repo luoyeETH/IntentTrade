@@ -86,6 +86,10 @@ analysis:
   memory_lookback_hours: 168
   memory_max_items: 6
   memory_min_confidence: 0.75
+  # Allow the LLM to discover instruments and query live/recent market facts.
+  agent_tools_enabled: true
+  agent_max_rounds: 8
+  agent_price_lookback_days: 365
 
 execution:
   mode: paper  # paper only in Phase 1

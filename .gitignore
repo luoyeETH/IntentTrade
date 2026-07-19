@@ -49,5 +49,5 @@ data/db/*.db-journal
 data/cache/
 !data/sample/**
 
-# Learned aliases may contain private slang experiments; keep local by default
+# Learned aliases/instruments may contain private experiments; keep local by default
 config/ticker_aliases.learned.yaml
