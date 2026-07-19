@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -302,6 +304,142 @@ class TwitterApiIoFeed(SocialFeed):
         return posts
 
 
+class BirdSocialFeed(SocialFeed):
+    """Read public X timelines through the cookie-authenticated bird CLI."""
+
+    def __init__(
+        self,
+        auth_token: str,
+        ct0: str,
+        *,
+        command: str = "bird",
+        timeout_seconds: int = 60,
+    ) -> None:
+        if not shutil.which(command):
+            raise RuntimeError(
+                f"bird CLI not found: {command}. Install @jtsang/bird or set "
+                "TWITTER_BIRD_BIN to its executable path."
+            )
+        self.auth_token = auth_token
+        self.ct0 = ct0
+        self.command = command
+        self.timeout_seconds = max(10, int(timeout_seconds))
+
+    def _safe_error(self, value: str) -> str:
+        message = value.strip()
+        for secret in (self.auth_token, self.ct0):
+            if secret:
+                message = message.replace(secret, "<redacted>")
+        return message[-800:] or "unknown bird error"
+
+    @staticmethod
+    def _tweet_list(payload: object) -> list[dict]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            tweets = payload.get("tweets") or payload.get("data") or []
+            if isinstance(tweets, list):
+                return [item for item in tweets if isinstance(item, dict)]
+        raise RuntimeError("bird returned an unexpected JSON response")
+
+    @staticmethod
+    def _post_from_tweet(tweet: dict, fallback_username: str) -> Optional[SocialPost]:
+        tid = str(tweet.get("id") or "")
+        text = str(tweet.get("text") or "")
+        if not tid or not text:
+            return None
+        author = tweet.get("author") if isinstance(tweet.get("author"), dict) else {}
+        username = str(author.get("username") or fallback_username).lstrip("@")
+        display_name = str(author.get("name") or "")
+        media_urls: list[str] = []
+        media_alts: list[str] = []
+        quoted = tweet.get("quotedTweet")
+        media_sources = [tweet]
+        if isinstance(quoted, dict):
+            media_sources.append(quoted)
+        for source in media_sources:
+            for media in source.get("media") or []:
+                if not isinstance(media, dict):
+                    continue
+                url = (
+                    media.get("url")
+                    or media.get("previewUrl")
+                    or media.get("videoUrl")
+                )
+                if url and str(url) not in media_urls:
+                    media_urls.append(str(url))
+                    media_alts.append(str(media.get("altText") or ""))
+        return SocialPost(
+            id=tid,
+            platform="twitter",
+            author_username=username,
+            author_display_name=display_name,
+            text=text,
+            created_at=_parse_tweet_time(tweet.get("createdAt")),
+            url=f"https://x.com/{username}/status/{tid}",
+            media_urls=media_urls,
+            media_alt_texts=media_alts,
+            raw=tweet,
+        )
+
+    def fetch_user_posts(
+        self, username: str, limit: int = 50
+    ) -> list[SocialPost]:
+        user = username.lstrip("@")
+        count = min(20, max(1, int(limit)))
+        env = os.environ.copy()
+        # PM2's Node IPC variables are inherited by the Python service. If they
+        # reach bird, its Node runtime treats an unrelated fd as an IPC channel.
+        env.pop("NODE_CHANNEL_FD", None)
+        env.pop("NODE_CHANNEL_SERIALIZATION_MODE", None)
+        env.update(
+            {
+                "AUTH_TOKEN": self.auth_token,
+                "CT0": self.ct0,
+                "NO_COLOR": "1",
+            }
+        )
+        args = [
+            self.command,
+            "user-tweets",
+            f"@{user}",
+            "--count",
+            str(count),
+            "--max-pages",
+            "1",
+            "--json",
+            "--plain",
+            "--no-color",
+        ]
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                env=env,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"bird timed out after {self.timeout_seconds}s while reading @{user}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"could not run bird CLI: {exc}") from exc
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"bird failed for @{user}: {self._safe_error(result.stderr)}"
+            )
+        try:
+            tweets = self._tweet_list(json.loads(result.stdout))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("bird returned invalid JSON") from exc
+        posts = [self._post_from_tweet(tweet, user) for tweet in tweets]
+        parsed = [post for post in posts if post is not None]
+        parsed.sort(key=lambda post: post.created_at, reverse=True)
+        return parsed[:count]
+
+
 class RapidApiTwitter241Feed(SocialFeed):
     """RapidAPI Twttr API (twitter241) — user resolve + user-tweets timeline.
 
@@ -523,6 +661,21 @@ class RapidApiTwitter241Feed(SocialFeed):
 
 def create_social_feed(settings: Settings) -> SocialFeed:
     source = (settings.twitter.source or "mock").lower()
+    if source in ("bird", "bird_cli", "cookie"):
+        auth_token = os.getenv("TWITTER_AUTH_TOKEN") or os.getenv("AUTH_TOKEN") or ""
+        ct0 = os.getenv("TWITTER_CT0") or os.getenv("CT0") or ""
+        if not auth_token or not ct0:
+            raise RuntimeError(
+                "twitter.source=bird but TWITTER_AUTH_TOKEN/TWITTER_CT0 are not set "
+                "in .env; copy auth_token and ct0 from an active x.com browser session"
+            )
+        command = os.getenv("TWITTER_BIRD_BIN") or "bird"
+        return BirdSocialFeed(
+            auth_token,
+            ct0,
+            command=command,
+            timeout_seconds=settings.twitter.bird_timeout_seconds,
+        )
     if source in ("rapidapi", "twitter241", "twttr", "rapidapi_twitter241"):
         key = os.getenv("TWITTER_RAPIDAPI_KEY") or os.getenv("RAPIDAPI_KEY") or ""
         if not key:

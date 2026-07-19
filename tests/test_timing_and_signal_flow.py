@@ -212,8 +212,11 @@ def test_multimodal_analyzes_original_images_independently_then_merges(
         assert system == intent_module.IMAGE_SYSTEM_PROMPT
         image_block = content[0]
         assert image_block["type"] == "image"
-        assert image_block["source"]["type"] == "url"
-        assert image_block["source"]["url"].startswith("https://img.test/")
+        assert image_block["source"] == {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": "encoded-image",
+        }
         return {
             **final_result,
             "summary": "图片独立交易计划",
@@ -223,6 +226,15 @@ def test_multimodal_analyzes_original_images_independently_then_merges(
     monkeypatch.setenv("INTENT_TRADE_LLM_KEY", "test-key")
     monkeypatch.setattr(intent_module, "chat_json", fake_chat_json)
     monkeypatch.setattr(intent_module, "chat_json_content", fake_chat_json_content)
+    monkeypatch.setattr(
+        intent_module,
+        "image_source_from_url",
+        lambda url: {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": "encoded-image",
+        },
+    )
 
     analyzer = IntentAnalyzer(
         TickerMap(ROOT / "config" / "ticker_aliases.yaml"),

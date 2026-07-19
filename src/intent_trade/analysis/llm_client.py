@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
+
+import httpx
+
+
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_TRUSTED_IMAGE_HOSTS = {"pbs.twimg.com"}
 
 
 def llm_enabled() -> bool:
@@ -18,6 +26,52 @@ def default_model() -> str:
         or os.getenv("ANTHROPIC_MODEL")
         or "grok-4.5"
     )
+
+
+def image_source_from_url(
+    url: str,
+    *,
+    timeout: float = 20.0,
+    max_bytes: int = _MAX_IMAGE_BYTES,
+) -> dict[str, str]:
+    """Download a trusted X image and return an Anthropic base64 source."""
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or hostname not in _TRUSTED_IMAGE_HOSTS:
+        raise ValueError(f"untrusted image URL host: {hostname or 'missing'}")
+
+    headers = {"User-Agent": "IntentTrade/1.0", "Accept": "image/jpeg,image/png"}
+    chunks: list[bytes] = []
+    size = 0
+    with httpx.stream(
+        "GET",
+        url,
+        headers=headers,
+        timeout=timeout,
+        follow_redirects=False,
+    ) as response:
+        response.raise_for_status()
+        declared_size = response.headers.get("content-length")
+        if declared_size and int(declared_size) > max_bytes:
+            raise ValueError(f"image exceeds {max_bytes} byte limit")
+        for chunk in response.iter_bytes():
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError(f"image exceeds {max_bytes} byte limit")
+            chunks.append(chunk)
+
+    data = b"".join(chunks)
+    if data.startswith(b"\xff\xd8\xff"):
+        media_type = "image/jpeg"
+    elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+        media_type = "image/png"
+    else:
+        raise ValueError("image response is not a supported JPEG or PNG")
+    return {
+        "type": "base64",
+        "media_type": media_type,
+        "data": base64.b64encode(data).decode("ascii"),
+    }
 
 
 def chat_json(

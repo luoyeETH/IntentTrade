@@ -9,6 +9,7 @@ paper-settle running while `intent-trade serve` is up (e.g. under PM2).
 from __future__ import annotations
 
 import logging
+import random
 import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -26,6 +27,8 @@ _state: dict[str, Any] = {
     "enabled": False,
     "running": False,
     "interval_seconds": 0,
+    "jitter_seconds": 0,
+    "next_delay_seconds": 0,
     "max_analyze": 0,
     "cycles": 0,
     "last_started_at": None,
@@ -72,16 +75,19 @@ def _run_once(max_analyze: int) -> dict[str, Any]:
     }
 
 
-def _loop(interval: int, max_analyze: int) -> None:
+def _loop(interval: int, jitter: int, max_analyze: int) -> None:
     log.info(
-        "background poller started interval=%ss max_analyze=%s",
+        "background poller started interval=%ss jitter=%ss max_analyze=%s",
         interval,
+        jitter,
         max_analyze,
     )
     # First cycle soon after boot; subsequent cycles wait full interval.
     first = True
+    next_delay = interval
+    error_streak = 0
     while not _stop.is_set():
-        if not first and _stop.wait(timeout=interval):
+        if not first and _stop.wait(timeout=next_delay):
             break
         first = False
 
@@ -102,9 +108,23 @@ def _loop(interval: int, max_analyze: int) -> None:
             )
             if summary.get("feed_error"):
                 log.warning("poller feed_error: %s", summary["feed_error"])
+                error_streak += 1
+            else:
+                error_streak = 0
+            base_delay = (
+                min(interval * (2 ** min(error_streak, 3)), 3600)
+                if error_streak
+                else interval
+            )
+            next_delay = base_delay + random.randint(0, jitter) if jitter else base_delay
+            _update(next_delay_seconds=next_delay)
         except Exception as exc:  # noqa: BLE001 — keep loop alive
             _update(last_error=str(exc), last_finished_at=_utc_now_iso())
             log.exception("poller cycle failed: %s", exc)
+            error_streak += 1
+            base_delay = min(interval * (2 ** min(error_streak, 3)), 3600)
+            next_delay = base_delay + random.randint(0, jitter) if jitter else base_delay
+            _update(next_delay_seconds=next_delay)
         finally:
             _update(running=False)
 
@@ -118,12 +138,15 @@ def start() -> None:
     tw = settings.twitter
     enabled = bool(getattr(tw, "auto_poll", True))
     interval = max(15, int(tw.poll_interval_seconds or 60))
+    jitter = max(0, int(getattr(tw, "poll_jitter_seconds", 0) or 0))
     max_analyze = int(getattr(tw, "auto_poll_max_analyze", 10) or 10)
 
     _stop.clear()
     _update(
         enabled=enabled,
         interval_seconds=interval,
+        jitter_seconds=jitter,
+        next_delay_seconds=interval,
         max_analyze=max_analyze,
         running=False,
     )
@@ -138,7 +161,7 @@ def start() -> None:
 
     _thread = threading.Thread(
         target=_loop,
-        args=(interval, max_analyze),
+        args=(interval, jitter, max_analyze),
         name="intent-trade-poller",
         daemon=True,
     )

@@ -13,6 +13,7 @@ from intent_trade.analysis.llm_client import (
     chat_json_agent,
     chat_json_content,
     default_model,
+    image_source_from_url,
     llm_enabled,
 )
 from intent_trade.analysis.ticker_map import TickerMap
@@ -522,14 +523,14 @@ KOL: @{post.author_username}
   "reasoning": "基于哪些视觉证据得出结论"
 }}
 """
-            content = [
-                {
-                    "type": "image",
-                    "source": {"type": "url", "url": url},
-                },
-                {"type": "text", "text": prompt},
-            ]
             try:
+                content = [
+                    {
+                        "type": "image",
+                        "source": image_source_from_url(url),
+                    },
+                    {"type": "text", "text": prompt},
+                ]
                 result = chat_json_content(
                     IMAGE_SYSTEM_PROMPT,
                     content,

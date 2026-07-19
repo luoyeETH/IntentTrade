@@ -18,8 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 class TwitterConfig(BaseModel):
     source: str = "mock"
     poll_interval_seconds: int = 300
+    poll_jitter_seconds: int = 0
     max_posts_per_kol: int = 50
     include_media: bool = True
+    bird_timeout_seconds: int = 60
     # When True, `intent-trade serve` runs a background fetch→analyze→settle loop
     # so tweets keep updating without a browser open or manual 拉帖.
     auto_poll: bool = True
